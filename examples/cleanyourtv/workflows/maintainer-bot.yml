@@ -1,0 +1,30 @@
+# Template for the target repo (not active). Decisions read PR data only; no PR code runs where secrets exist.
+name: maintainer-bot
+on:
+  workflow_run: { workflows: [CI], types: [completed] }   # decide after CI, with its result
+  schedule: [{ cron: "30 3 * * *" }]                        # 09:00 IST daily queue
+  issue_comment: { types: [created] }                       # /approve on the queue issue
+permissions: { contents: read, pull-requests: write, issues: write }
+concurrency: { group: maintainer-bot-${{ github.event_name }}, cancel-in-progress: false }
+jobs:
+  decide:
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Gathin23/maintainer-bot@<pinned-sha>
+        with:
+          mode: decide
+          og-pc-api-key: ${{ secrets.OG_PC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+  queue:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Gathin23/maintainer-bot@<pinned-sha>
+        with: { mode: queue, og-pc-api-key: "${{ secrets.OG_PC_API_KEY }}", github-token: "${{ secrets.GITHUB_TOKEN }}" }
+  apply:
+    if: github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Gathin23/maintainer-bot@<pinned-sha>
+        with: { mode: apply, og-pc-api-key: "${{ secrets.OG_PC_API_KEY }}", github-token: "${{ secrets.MAINTAINER_BOT_APP_TOKEN }}" }

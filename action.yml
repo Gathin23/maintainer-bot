@@ -1,0 +1,35 @@
+name: maintainer-bot
+description: Triage and maintain pull requests the way your maintainer does, on 0G Private Computer.
+branding: { icon: check-circle, color: green }
+inputs:
+  mode:
+    description: "decide (one PR), queue (post the daily queue), apply (run an approved queue)"
+    required: true
+  og-pc-api-key:
+    description: 0G Private Computer API key (store as a secret)
+    required: true
+  model:
+    description: router model id for decisions
+    default: glm-5.3
+  rules:
+    description: path to the repo's MAINTAINER.md
+    default: .github/maintainer/MAINTAINER.md
+  github-token:
+    description: token of the bot's GitHub App installation
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+    - shell: bash
+      run: pip install -q requests
+    - shell: bash
+      env:
+        OG_PC_API_KEY: ${{ inputs.og-pc-api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        MB_MODE: ${{ inputs.mode }}
+        MB_MODEL: ${{ inputs.model }}
+        MB_RULES: ${{ inputs.rules }}
+      run: python -m maintainer_bot.action
+      working-directory: ${{ github.action_path }}

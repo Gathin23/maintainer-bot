@@ -1,0 +1,10 @@
+# secrets never live in this repo
+.env
+*.env
+*.key
+# local caches and runs
+data/
+runs/
+__pycache__/
+*.pyc
+.venv/
