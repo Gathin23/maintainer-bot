@@ -38,6 +38,26 @@ class RepoRules:
     strings_locale_re: str = r"^launcher/app/src/main/res/values-[^/]+/strings\.xml$"
 
 
+# Packages that pair the remote or handle text input. Disabling them can leave a TV with no way to re-pair the
+# Bluetooth remote or to type the Wi-Fi password again, so a list that does it always goes to the maintainer.
+PAIRING_INPUT_RE = re.compile(r"autopair|bt_?rcu|rcu_?pair|remote_?pair|btpair|bluetooth.*pair|pair.*bluetooth|"
+                              r"inputmethod|\.ime(\.|$)|_ime$|\.ime_|keyboard", re.I)
+PKG_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+)\b")
+HIDE_RE = re.compile(r"\bpm\s+(hide|block)\b|^\s*(hide|block)\s+[a-zA-Z]", re.I)
+UNDO_RE = re.compile(r"\bpm\s+(unhide|unblock)\b|\b(unhide|unblock)\b", re.I)
+
+
+def _list_package(line: str) -> str:
+    """The package a list line acts on: the first token, or the package inside a `pm …` command."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return ""
+    if s.split()[0] in ("pm", "adb", "cmd"):
+        m = PKG_RE.search(s.split("#", 1)[0].split(None, 1)[1] if " " in s else "")
+        return m.group(1) if m else ""
+    return s.split()[0]
+
+
 def _added_lines(patch: str) -> list[str]:
     return [l[1:] for l in (patch or "").splitlines() if l.startswith("+") and not l.startswith("+++")]
 
@@ -82,6 +102,24 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
             if pkg in rules.protected_packages or any(k in pkg.lower() for k in rules.protected_keywords):
                 protected_hits.append(pkg)
 
+    pairing_input = []
+    hide_lines, has_undo = [], False
+    for f in files:
+        if not f["path"].startswith("examples/"):
+            continue
+        added = _added_lines(f.get("patch", ""))
+        if any(UNDO_RE.search(l) for l in added):
+            has_undo = True
+        for line in added:
+            if HIDE_RE.search(line.split("#", 1)[0]):
+                hide_lines.append(line.strip()[:80])
+            if not re.match(rules.list_file_re, f["path"]):
+                continue
+            pkg = _list_package(line)
+            if pkg and PAIRING_INPUT_RE.search(pkg) and pkg not in rules.protected_packages:
+                pairing_input.append(pkg)
+    hide_without_undo = sorted(set(hide_lines)) if hide_lines and not has_undo else []
+
     adds_internet = any(f["path"] == rules.manifest_path and "android.permission.INTERNET" in "\n".join(
         _added_lines(f.get("patch", ""))) for f in files)
     binaries = [p for p in paths if p.lower().endswith(BINARY_EXT)]
@@ -105,6 +143,8 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
         "duplicate_of_merged_folder": duplicate_of_merged,
         "competing_open_prs": competing,
         "protected_packages_disabled": sorted(set(protected_hits)),
+        "pairing_or_input_packages_disabled": sorted(set(pairing_input)),
+        "hide_without_undo": hide_without_undo,
         "adds_internet_permission": adds_internet,
         "binary_files": binaries,
         "sensitive_paths": sensitive,
@@ -121,6 +161,11 @@ def hard_overrides(facts: dict) -> tuple[str | None, str]:
     """
     if facts.get("protected_packages_disabled"):
         return "rework", "a list disables protected packages: " + ", ".join(facts["protected_packages_disabled"][:4])
+    if facts.get("pairing_or_input_packages_disabled"):
+        return "hold", ("a list disables remote-pairing or input packages: "
+                        + ", ".join(facts["pairing_or_input_packages_disabled"][:4]))
+    if facts.get("hide_without_undo"):
+        return "hold", "a list uses pm hide/block without the matching unhide/unblock undo in the header"
     if facts.get("sensitive_paths"):
         return "hold", "touches maintainer-only paths: " + ", ".join(facts["sensitive_paths"][:4])
     if facts.get("binary_files"):

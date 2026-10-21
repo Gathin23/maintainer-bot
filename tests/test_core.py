@@ -54,6 +54,34 @@ class FactsTest(unittest.TestCase):
         self.assertFalse(facts.strings_gap(fx_all))
 
 
+class HoldsTest(unittest.TestCase):
+    """Round M: lists that break remote pairing/input, and pm hide without an undo, go to the maintainer."""
+
+    def test_pairing_and_input_packages_hold(self):
+        patch = "+com.tcl.autopair\n+com.tcl.ads\n+# com.tcl.tcl_bt_rcu stays on\n+com.sohu.inputmethod.sogou.tv\n"
+        fx = facts.compute({"files": [f("examples/tcl-x/debloat.txt", patch=patch)]})
+        self.assertEqual(fx["pairing_or_input_packages_disabled"],
+                         ["com.sohu.inputmethod.sogou.tv", "com.tcl.autopair"])
+        self.assertEqual(facts.apply_overrides("merge", fx)[0], "hold")
+        self.assertEqual(facts.apply_overrides("rework", fx), ("rework", ""))  # never upgrades
+
+    def test_bt_rcu_and_ime_shapes(self):
+        for pkg in ("com.tcl.tcl_bt_rcu", "com.mediatek.ime.tv", "com.acme.remotepair"):
+            fx = facts.compute({"files": [f("examples/a/debloat.txt", patch=f"+{pkg}\n")]})
+            self.assertEqual(fx["pairing_or_input_packages_disabled"], [pkg], pkg)
+
+    def test_pm_hide_needs_matching_undo(self):
+        bad = facts.compute({"files": [f("examples/ff/debloat.txt",
+                                         patch="+# undo: tools/restore.sh\n+pm hide com.ff.ads\n")]})
+        self.assertTrue(bad["hide_without_undo"])
+        self.assertEqual(facts.apply_overrides("merge-with-fix", bad)[0], "hold")
+        ok = facts.compute({"files": [f("examples/ff/debloat.txt",
+                                        patch="+# undo: pm unhide com.ff.ads\n+pm hide com.ff.ads\n")]})
+        self.assertEqual(ok["hide_without_undo"], [])
+        comment_only = facts.compute({"files": [f("examples/ff/debloat.txt", patch="+# we tried pm hide once\n")]})
+        self.assertEqual(comment_only["hide_without_undo"], [])
+
+
 class LedgerTest(unittest.TestCase):
     def test_cap_and_resume(self):
         with tempfile.TemporaryDirectory() as d:

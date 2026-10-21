@@ -160,10 +160,10 @@ def _diff(files: list[dict], limit: int = 9000) -> str:
 # ---------- running ----------
 
 def judge(r: dict, ctx: dict, *, rules_md: str, model: str, critic_model: str | None, second_model: str | None,
-          ledger: Ledger) -> dict:
+          ledger: Ledger, system_extra: str = "") -> dict:
     ex = ctx["index"].similar(r, k=6)
     user = prompt(r, ctx, rules_md, retrieval.render(ex))
-    d = call_tool(model=model, system=SYSTEM, user=user, tool=TOOL, ledger=ledger, max_tokens=4000,
+    d = call_tool(model=model, system=SYSTEM + system_extra, user=user, tool=TOOL, ledger=ledger, max_tokens=4000,
                   tag=f"v3:{r['pr']}")
     out = {"pr": r["pr"], "truth": r["truth"], "family": r["family"], "split": r["split"], "type": r["type"],
            "batch_dependent": r["batch_dependent"], "examples": [e["pr"] for e in ex],

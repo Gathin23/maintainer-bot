@@ -2,7 +2,7 @@ import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspa
 """Backtest runs: glm-5.3-flash on everything, glm-5.3 and claude-opus-5.5 on one fixed stratified sample."""
 import sys
 from maintainer_bot import backtest, ledger
-rows = backtest.prepare('data/cleanyourtv', '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739')
+rows = backtest.prepare('data/cleanyourtv', os.environ.get('MB_GIT_DIR', '../cleanyourtv'))
 L = ledger.Ledger('runs/ledger.jsonl', 25.0)
 rules = open('examples/cleanyourtv/MAINTAINER.md').read()
 sample = backtest.stratified_sample(rows, 120)

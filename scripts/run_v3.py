@@ -7,7 +7,7 @@ test: every PR in the TEST split (21 Oct: rounds K and L), run once with the fin
 import json
 from maintainer_bot import backtest, ledger, v3
 
-GIT = '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739'
+GIT = os.environ.get('MB_GIT_DIR', '../cleanyourtv')
 CAP = 41.0
 MODEL, CRITIC, SECOND = 'claude-opus-5.5', 'claude-opus-5.5', 'glm-5.3-flash'
 

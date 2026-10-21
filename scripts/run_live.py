@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from maintainer_bot import batch, checklists, dataset, facts as facts_mod, ledger, memory, v3
 
-GIT = '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739'
+GIT = os.environ.get('MB_GIT_DIR', '../cleanyourtv')
 REPO = 'Gathin23/cleanyourtv'
 CAP = 56.0
 MODEL, CRITIC, SECOND = 'claude-opus-5.5', 'claude-opus-5.5', 'glm-5.3-flash'

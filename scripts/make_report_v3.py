@@ -4,7 +4,7 @@ import json
 from collections import Counter
 from maintainer_bot import ledger, v3
 
-GIT = '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739'
+GIT = os.environ.get('MB_GIT_DIR', '../cleanyourtv')
 rows, ctx = v3.load('data/cleanyourtv', GIT)
 by = {r['pr']: r for r in rows}
 

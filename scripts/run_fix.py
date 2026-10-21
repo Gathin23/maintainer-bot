@@ -2,7 +2,7 @@ import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspa
 """Job A dry-run: propose edits for past merge-with-fix PRs and compare with what the maintainer changed on merge."""
 import json, subprocess
 from maintainer_bot import backtest, dataset, fix, ledger
-G = '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739'
+G = os.environ.get('MB_GIT_DIR', '../cleanyourtv')
 rows = {r['pr']: r for r in backtest.prepare('data/cleanyourtv', G)}
 L = ledger.Ledger('runs/ledger.jsonl', 25.0)
 bot = {json.loads(l)['pr']: json.loads(l) for l in open('runs/claude-opus-5.5/results.jsonl') if '"verdict"' in l}

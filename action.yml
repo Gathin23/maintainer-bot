@@ -1,35 +1,73 @@
 name: maintainer-bot
-description: Triage and maintain pull requests the way your maintainer does, on 0G Private Computer.
+description: Reviews pull requests the way your maintainer does and suggests a verdict. Runs on 0G Private Computer.
 branding: { icon: check-circle, color: green }
 inputs:
-  mode:
-    description: "decide (one PR), queue (post the daily queue), apply (run an approved queue)"
+  github-token:
+    description: token with pull-requests and issues write (the workflow's GITHUB_TOKEN is enough)
     required: true
   og-pc-api-key:
-    description: 0G Private Computer API key (store as a secret)
+    description: 0G Private Computer API key (store it as a repository secret)
     required: true
+  pr:
+    description: pull request number to review; empty reviews every open PR (backfill)
+    required: false
+    default: ""
+  force:
+    description: "true: review again even if this commit was already reviewed"
+    required: false
+    default: "false"
+  dry-run:
+    description: "true: print the comment and labels, write nothing"
+    required: false
+    default: "false"
+  daily-cap-usd:
+    description: stop reviewing for the day once this much was spent
+    required: false
+    default: "5"
+  per-pr-cap-usd:
+    description: most a single review may spend
+    required: false
+    default: "0.5"
   model:
-    description: router model id for decisions
-    default: glm-5.3
-  rules:
-    description: path to the repo's MAINTAINER.md
-    default: .github/maintainer/MAINTAINER.md
-  github-token:
-    description: token of the bot's GitHub App installation
-    required: true
+    description: 0G router model for the decision and the critic
+    required: false
+    default: claude-opus-5.5
+  second-model:
+    description: 0G router model for the cheap second opinion
+    required: false
+    default: glm-5.3-flash
+  ledger-dir:
+    description: where the spend ledger lives (cache it between runs to enforce the daily cap)
+    required: false
+    default: .maintainer-bot
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
       with: { python-version: "3.12" }
     - shell: bash
-      run: pip install -q requests
+      run: python -m pip install -q "requests==2.32.3"
     - shell: bash
       env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
         OG_PC_API_KEY: ${{ inputs.og-pc-api-key }}
-        GH_TOKEN: ${{ inputs.github-token }}
-        MB_MODE: ${{ inputs.mode }}
+        PYTHONPATH: ${{ github.action_path }}
+        MB_LEDGER: ${{ github.workspace }}/${{ inputs.ledger-dir }}/ledger.jsonl
+        MB_DAILY_CAP: ${{ inputs.daily-cap-usd }}
+        MB_PER_PR_CAP: ${{ inputs.per-pr-cap-usd }}
         MB_MODEL: ${{ inputs.model }}
-        MB_RULES: ${{ inputs.rules }}
-      run: python -m maintainer_bot.action
-      working-directory: ${{ github.action_path }}
+        MB_SECOND_MODEL: ${{ inputs.second-model }}
+        MB_PR: ${{ inputs.pr }}
+        MB_FORCE: ${{ inputs.force }}
+        MB_DRY_RUN: ${{ inputs.dry-run }}
+        MB_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        args=()
+        [ "$MB_FORCE" = "true" ] && args+=(--force)
+        [ "$MB_DRY_RUN" = "true" ] && args+=(--dry-run)
+        if [ -n "$MB_PR" ]; then
+          python -m maintainer_bot review --repo "$MB_REPO" --pr "$MB_PR" "${args[@]}"
+        else
+          python -m maintainer_bot backfill --repo "$MB_REPO" "${args[@]}"
+        fi

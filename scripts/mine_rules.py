@@ -8,7 +8,7 @@ import json
 from maintainer_bot import ledger, v3
 from maintainer_bot.router import call_tool
 
-GIT = '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739'
+GIT = os.environ.get('MB_GIT_DIR', '../cleanyourtv')
 run_dir, rules_path, out_path = sys.argv[1:4]
 rows, ctx = v3.load('data/cleanyourtv', GIT)
 by = {r['pr']: r for r in rows}
