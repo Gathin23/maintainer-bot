@@ -1,3 +1,4 @@
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """Job A dry-run: propose edits for past merge-with-fix PRs and compare with what the maintainer changed on merge."""
 import json, subprocess
 from maintainer_bot import backtest, dataset, fix, ledger

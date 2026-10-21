@@ -1,3 +1,4 @@
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """Backtest runs: glm-5.3-flash on everything, glm-5.3 and claude-opus-5.5 on one fixed stratified sample."""
 import sys
 from maintainer_bot import backtest, ledger

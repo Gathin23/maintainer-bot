@@ -1,3 +1,4 @@
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """Round L (PRs #543+) through Claude Opus 5.5 on 0G PC, to render a real queue and dry-run /approve."""
 from maintainer_bot import backtest, ledger
 rows = backtest.prepare('data/cleanyourtv', '/Users/gathin/.superset/worktrees/tv-vibehack/caramel-awe-67357739')

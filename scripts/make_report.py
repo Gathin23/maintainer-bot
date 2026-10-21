@@ -1,3 +1,4 @@
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """Assemble report/backtest.md from the saved runs (no model calls)."""
 import json, os, collections
 from maintainer_bot import backtest, report, ledger, queue, commands, apply
