@@ -1,0 +1,58 @@
+[
+ {
+  "pr": 338,
+  "merged_main": true,
+  "resolved": [
+   "SHOWCASE.md: kept both sides' table rows"
+  ],
+  "fix": "In the new SHOWCASE.md row, change the 'Built on' cell to: \"Haier Android TV / Google TV (MediaTek, CVTE); not yet run on a TV\"",
+  "summary": "note in the cleanyourtv for Haier SHOWCASE row that it has not yet run on a TV",
+  "problems": [],
+  "edits": [
+   {
+    "path": "SHOWCASE.md",
+    "replace": "reduced motion by default and four themes | Haier Android TV / Google TV (MediaTek, CVTE); not yet run on a TV |",
+    "search": "reduced motion by default and four themes | Haier Android TV / Google TV (MediaTek, CVTE) |"
+   }
+  ],
+  "usd": 0.0207,
+  "tests_after_fix": "OK (skipped=1)",
+  "diff": "On merge: note in the cleanyourtv for Haier SHOWCASE row that it has not yet run on a TV\n\n SHOWCASE.md | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)"
+ },
+ {
+  "pr": 709,
+  "merged_main": false,
+  "resolved": [],
+  "fix": "Add a skyworth-65a3f row (Skyworth 65A3F, China, Android 13 CCOS, no GMS) to the TV table in the root README.md, matching the examples/README.md entry.",
+  "summary": "add Skyworth 65A3F row to the root README TV table, matching examples/README.md",
+  "problems": [],
+  "edits": [
+   {
+    "path": "README.md",
+    "replace": "| SHARP AQUOS TVE21F (AQUOS-TVE21F, banqiao, CVTE/MediaTek), UK | Android TV 14 |\n| Skyworth 65A3F (7T641_A3F, MediaTek MT9633), China | Android 13 (CCOS 10.01.250328) |\n",
+    "search": "| SHARP AQUOS TVE21F (AQUOS-TVE21F, banqiao, CVTE/MediaTek), UK | Android TV 14 |\n"
+   }
+  ],
+  "usd": 0.0555,
+  "tests_after_fix": "OK (skipped=1)",
+  "diff": "On merge: add Skyworth 65A3F row to the root README TV table, matching examples/README.md\n\ndiff --git a/README.md b/README.md\nindex 9e964585..fe4d87c9 100644\n--- a/README.md\n+++ b/README.md\n@@ -170,6 +170,7 @@ BYINTEK, JMGO, Portronics, Stellamore, Wanbo and XGIMI projectors\n | SANYO ATV R2 (SCBC, Realtek RTD285O) | Android TV 9 |\n | Sankey SMART2KTVSE (Whale OS, SiliconPlayer am30bm) | Android TV 13 |\n | SHARP AQUOS TVE21F (AQUOS-TVE21F, banqiao, CVTE/MediaTek), UK | Android TV 14 |\n+| Skyworth 65A3F (7T641_A3F, MediaTek MT9633), China | Android 13 (CCOS 10.01.250328) |\n | Skyworth SW-22SA (SW6H, MediaTek), ~1.9 GB | Android TV 14 (Google TV home) |\n | Skyworth SWTV-21AE (sunnyvale, MediaTek) | Android TV 14 |\n | Skyworth SWTV-24NA-4K NF (eleonas, MediaTek mt5896), US | Google TV 14 |"
+ },
+ {
+  "pr": 733,
+  "merged_main": false,
+  "resolved": [],
+  "fix": "Add a `skyworth-swtv-24ae-4k-nf/` row to the TV table in the root README.md, next to the skyworth-swtv-24na-4k-nf row and matching the examples/README entry.",
+  "summary": "list Skyworth SWTV-24AE-4K NF in the root README TV table next to SWTV-24NA-4K NF",
+  "problems": [],
+  "edits": [
+   {
+    "path": "README.md",
+    "replace": "| Skyworth SWTV-24AE-4K NF (eleonas, MediaTek mt5896), South Africa/Global | Google TV 14 |\n| Skyworth SWTV-24NA-4K NF (eleonas, MediaTek mt5896), US | Google TV 14 |",
+    "search": "| Skyworth SWTV-24NA-4K NF (eleonas, MediaTek mt5896), US | Google TV 14 |"
+   }
+  ],
+  "usd": 0.0595,
+  "tests_after_fix": "OK (skipped=1)",
+  "diff": "On merge: list Skyworth SWTV-24AE-4K NF in the root README TV table next to SWTV-24NA-4K NF\n\ndiff --git a/README.md b/README.md\nindex afe18950..29374717 100644\n--- a/README.md\n+++ b/README.md\n@@ -185,6 +185,7 @@ BYINTEK, JMGO, Portronics, Stellamore, Wanbo and XGIMI projectors\n | SHARP AQUOS TVE21F (AQUOS-TVE21F, banqiao, CVTE/MediaTek), UK | Android TV 14 |\n | Skyworth SW-22SA (SW6H, MediaTek), ~1.9 GB | Android TV 14 (Google TV home) |\n | Skyworth SWTV-21AE (sunnyvale, MediaTek) | Android TV 14 |\n+| Skyworth SWTV-24AE-4K NF (eleonas, MediaTek mt5896), South Africa/Global | Google TV 14 |\n | Skyworth SWTV-24NA-4K NF (eleonas, MediaTek mt5896), US | Google TV 14 |\n | Sony BRAVIA 4K AE2 (BRAVIA_AE2, MediaTek MT5897), North America | Google TV 14 |\n | Sony BRAVIA 4K GB (BRAVIA_ATV2_EU, BRAVIA_ATV2) | Android TV 9 |"
+ }
+]

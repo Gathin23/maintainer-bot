@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create maintainer-bot App</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --accent: #1a7f37; --code: #f6f8fa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15181e; --fg: #e6edf3; --muted: #9198a1; --line: #2c313a; --accent: #3fb950; --code: #1f242c; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, sans-serif;
+         margin: 0; padding: 32px 16px; }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 28px; }
+  ol { padding-left: 22px; } li { margin: 0 0 18px; }
+  button, a.button { display: inline-block; background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+         padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; }
+  code, pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
+  code { padding: 1px 5px; } pre { padding: 12px; overflow-x: auto; }
+  details { margin-top: 28px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Create the maintainer-bot GitHub App</h1>
+  <p class="lead">One App, installed only on Gathin23/cleanyourtv. Contents, pull requests and issues write; checks
+  and metadata read; no webhook. Nothing is switched on until the workflow PR is merged.</p>
+  <ol>
+    <li>
+      <form id="f" action="https://github.com/settings/apps/new?state=maintainer-bot" method="post">
+        <input type="hidden" name="manifest" id="manifest">
+        <button type="submit">Create the App on GitHub</button>
+      </form>
+      GitHub shows the App name and permissions; click <b>Create GitHub App for Gathin23</b>.
+    </li>
+    <li>GitHub sends you back to the cleanyourtv page with <code>?code=…</code> in the address bar. Copy that code
+      (it works for one hour) and run, in a terminal:
+      <pre>~/Arsenal/maintainer-bot/setup/finish-app.sh THE_CODE</pre>
+      It turns the code into the App's client ID and private key and stores them straight into the two repository
+      secrets (<code>MAINTAINER_BOT_CLIENT_ID</code>, <code>MAINTAINER_BOT_PRIVATE_KEY</code>). The key is never
+      printed or saved to a file.</li>
+    <li>Open the install link the script prints, choose <b>Only select repositories → cleanyourtv</b>, Install.</li>
+  </ol>
+  <details>
+    <summary>If the button doesn't work: create it by hand</summary>
+    <p><a href="https://github.com/settings/apps/new?name=cleanyourtv-maintainer-bot&amp;url=https%3A%2F%2Fgithub.com%2FGathin23%2Fmaintainer-bot&amp;public=false&amp;webhook_active=false&amp;contents=write&amp;pull_requests=write&amp;issues=write&amp;checks=read&amp;metadata=read">This link</a>
+    opens the form with the same settings filled in. After creating it, copy the Client ID, generate a private key,
+    and run <code>gh secret set MAINTAINER_BOT_CLIENT_ID -R Gathin23/cleanyourtv</code> and
+    <code>gh secret set MAINTAINER_BOT_PRIVATE_KEY -R Gathin23/cleanyourtv &lt; the-key.pem</code>, then delete
+    the downloaded key.</p>
+  </details>
+</main>
+<script>
+document.getElementById("manifest").value = JSON.stringify({
+  name: "cleanyourtv-maintainer-bot",
+  url: "https://github.com/Gathin23/maintainer-bot",
+  description: "Does the maintainer work on CleanYourTV after the owner's /approve: merges, thank-yous, rework asks, kind closes, README counts. Runs on 0G Private Computer.",
+  public: false,
+  redirect_url: "https://github.com/Gathin23/cleanyourtv",
+  hook_attributes: { url: "https://github.com/Gathin23/maintainer-bot", active: false },
+  default_events: [],
+  default_permissions: { contents: "write", pull_requests: "write", issues: "write", checks: "read", metadata: "read" }
+});
+</script>
+</body>
+</html>

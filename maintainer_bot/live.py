@@ -117,6 +117,8 @@ def snapshot(gh: GitHub, n: int) -> dict:
                       "patch": f.get("patch") or "", "binary": "patch" not in f and int(f.get("changes") or 0) > 0})
     return {"pr": n, "title": pr["title"], "author": pr["user"]["login"], "body": (pr.get("body") or "")[:4000],
             "created_at": pr["created_at"], "head_sha": pr["head"]["sha"], "base_ref": pr["base"]["ref"],
+            "head_ref": pr["head"]["ref"],
+            "own_branch": (pr["head"].get("repo") or {}).get("full_name") == pr["base"]["repo"]["full_name"],
             "default_branch": pr["base"]["repo"]["default_branch"], "draft": pr.get("draft", False),
             "state": pr["state"], "labels": [l["name"] for l in pr.get("labels") or []], "files": files}
 
@@ -298,6 +300,8 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
     result = {"pr": n, "title": snap["title"], "head": snap["head_sha"][:12]}
     if snap["state"] != "open" or snap["draft"]:
         return {**result, "skipped": "closed or draft"}
+    if snap.get("own_branch") and snap.get("head_ref", "").startswith("bot/"):
+        return {**result, "skipped": "the bot's own merge or counts PR"}
     sticky_id, sticky_sha = find_sticky(gh, n)
     if not force and sticky_sha and snap["head_sha"].startswith(sticky_sha):
         return {**result, "skipped": "already reviewed at this commit"}

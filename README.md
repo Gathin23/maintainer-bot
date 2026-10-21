@@ -8,8 +8,8 @@ past decisions on similar PRs. It runs on [0G Private Computer](https://pc.0g.ai
 Built for [CleanYourTV](https://github.com/Gathin23/cleanyourtv), which got 500+ pull requests in its first
 four days.
 
-**Phase 1 (this release) only suggests.** It writes one comment and a few labels. It never merges, closes,
-approves, pushes or requests changes. A maintainer makes every final call.
+**Phase 1 only suggests.** It writes one comment and a few labels. It never merges, closes, approves, pushes
+or requests changes. **Phase 2** (below) acts, but only on a maintainer's `/approve` on the daily queue issue.
 
 ## What a PR gets
 
@@ -105,12 +105,30 @@ python -m maintainer_bot dataset  --repo OWNER/NAME --git-dir ../NAME --out data
 python -m maintainer_bot backtest --data data/NAME --git-dir ../NAME --rules MAINTAINER.md --model glm-5.3 --sample 120
 ```
 
-## What comes next
+## Phase 2: `/approve` and the bot does the maintainer work
 
-Phase 2 is a daily queue issue the maintainer answers with `/approve`, `/approve except #512` or per-PR
-commands, after which the bot merges (one PR at a time, re-tested), applies small fixes in a separate job
-that never holds a key while running PR code, and posts the comments. The pieces exist in this repo
-(`queue`, `approve`, `fix`) as dry-runs; they are not wired to GitHub yet.
+Built and tested, switched on per repo by adding a second workflow
+([`examples/cleanyourtv/maintainer-bot-queue.yml`](examples/cleanyourtv/maintainer-bot-queue.yml)).
+Full design: [docs/phase2.md](docs/phase2.md).
+
+- Every morning one issue, **Today's queue YYYY-MM-DD**, built from the phase-1 reviews with no model calls:
+  a checkbox per PR, grouped as merge, merge with a small fix (and the fix), a few changes first (and the ask),
+  close (and why), and a list of PRs that need a maintainer (and the question).
+- The repo owner (or someone on the allow-list) comments `/approve`, `/approve except #a #b`, `/approve #a #b`,
+  `/skip #n`, `/close #n reason` or `/rework #n ask`. Anything else is kept as a note; nobody else is read.
+- The bot then works through the batch one PR at a time: merge commits through the API; small fixes on a
+  `bot/merge-<n>` branch (PR head + an "On merge: …" commit) that goes through CI as its own PR before merging,
+  so the original PR shows as merged; rework comments with the `needs-rework` label; kind closes; a thank-you
+  on every merged PR naming what changed on merge; and one "README counts after today's merges" PR at the end.
+- It checks again at the moment of acting: the head commit must be the reviewed one, checks must be green
+  (a red one stops the batch), and PRs labelled `needs-maintainer`, `launcher` or `on-hold`, or touching
+  `.github/` or the bot's rules, are never merged. It never pushes to the default branch.
+- Identity: a GitHub App (or a fine-grained token), because the workflow's own token cannot start CI on the
+  bot's branches. `setup/create-app.html` creates the App in one click.
+
+```bash
+python -m maintainer_bot dry-run-approve --repo OWNER/NAME --out report/dryrun.md   # read-only: what /approve would do today
+```
 
 ## Wording about 0G
 

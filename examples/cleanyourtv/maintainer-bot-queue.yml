@@ -1,0 +1,99 @@
+# .github/workflows/maintainer-bot-queue.yml for Gathin23/cleanyourtv (phase 2).
+#
+# 09:17 IST every day: one issue "Today's queue YYYY-MM-DD" built from the phase-1 reviews (no model calls).
+# The owner comments /approve (or /approve except #a, /skip #n, /close #n reason, /rework #n ask) on that issue,
+# and the bot does the work: merges (small fixes go through a bot/merge-<n> PR and CI first), thank-you
+# comments, rework asks, kind closes, then one "README counts after today's merges" PR.
+#
+# Safety: nothing here runs on pull requests, so no PR code ever runs with these secrets. Commands are read
+# only from the repo owner (and MAINTAINER_BOT_ALLOW_USERS), only on issues labelled maintainer-queue.
+# The bot never pushes to main: it pushes bot/* branches and merges through PRs that need green CI.
+# Identity: a GitHub App (MAINTAINER_BOT_CLIENT_ID + MAINTAINER_BOT_PRIVATE_KEY) or, as a fallback, a
+# fine-grained token (MAINTAINER_BOT_TOKEN); the workflow's own GITHUB_TOKEN can't trigger CI on bot branches.
+name: maintainer-bot queue
+on:
+  schedule:
+    - cron: "47 3 * * *"  # 03:47 UTC = 09:17 IST
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  queue:
+    if: github.event_name != 'issue_comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: merge-queue, cancel-in-progress: false }
+    env:
+      HAS_APP: ${{ secrets.MAINTAINER_BOT_CLIENT_ID != '' }}
+    steps:
+      - id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.MAINTAINER_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MAINTAINER_BOT_PRIVATE_KEY }}
+      - uses: Gathin23/maintainer-bot@PINNED_SHA # maintainer-bot master, pinned
+        with:
+          mode: queue
+          github-token: ${{ steps.app.outputs.token || secrets.MAINTAINER_BOT_TOKEN }}
+          allowed-users: ${{ vars.MAINTAINER_BOT_ALLOW_USERS }}
+
+  act:
+    if: >-
+      github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'maintainer-queue') &&
+      contains(github.event.comment.body, '/') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       contains(format(',{0},', vars.MAINTAINER_BOT_ALLOW_USERS), format(',{0},', github.event.comment.user.login)))
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    concurrency: { group: merge-queue, cancel-in-progress: false }
+    env:
+      HAS_APP: ${{ secrets.MAINTAINER_BOT_CLIENT_ID != '' }}
+    steps:
+      - id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.MAINTAINER_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MAINTAINER_BOT_PRIVATE_KEY }}
+      - id: who
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          if [ -n "$SLUG" ]; then
+            id=$(gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
+            echo "name=${SLUG}[bot]" >> "$GITHUB_OUTPUT"
+            echo "email=${id}+${SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app.outputs.token || secrets.MAINTAINER_BOT_TOKEN }}
+          fetch-depth: 0
+          path: repo
+      - name: Fredoka for the README card (same file the card was drawn with)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/Fredoka.ttf" "https://github.com/google/fonts/raw/main/ofl/fredoka/Fredoka%5Bwdth,wght%5D.ttf"
+          echo "2ba02e68b152868aef9ba28e24b3648c7d457fe6f25c761f2c2c53fb61a73fc8  $RUNNER_TEMP/Fredoka.ttf" | sha256sum -c -
+      - id: day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .maintainer-bot
+          key: maintainer-bot-fix-ledger-${{ steps.day.outputs.day }}-${{ github.run_id }}
+          restore-keys: maintainer-bot-fix-ledger-${{ steps.day.outputs.day }}-
+      - uses: Gathin23/maintainer-bot@PINNED_SHA # maintainer-bot master, pinned
+        env:
+          MB_GIT_NAME: ${{ steps.who.outputs.name }}
+          MB_GIT_EMAIL: ${{ steps.who.outputs.email }}
+        with:
+          mode: command
+          github-token: ${{ steps.app.outputs.token || secrets.MAINTAINER_BOT_TOKEN }}
+          og-pc-api-key: ${{ secrets.OG_PC_API_KEY }}
+          allowed-users: ${{ vars.MAINTAINER_BOT_ALLOW_USERS }}
+          workdir: repo
+          counts-command: python3 $MB_ACTION_PATH/examples/cleanyourtv/update_counts.py . --font $RUNNER_TEMP/Fredoka.ttf
+          daily-cap-usd: "5"

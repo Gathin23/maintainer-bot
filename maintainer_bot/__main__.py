@@ -8,7 +8,12 @@
     python -m maintainer_bot review    --repo OWNER/NAME --pr 123 [--dry-run] [--force]
     python -m maintainer_bot backfill  --repo OWNER/NAME [--dry-run]
 
-Everything here is read-only against GitHub. Live actions only run inside the GitHub Action (see action.yml).
+Phase 2 (acts only on a maintainer's /approve; see docs/phase2.md):
+    python -m maintainer_bot queue-issue     --repo OWNER/NAME [--allow USERS] [--dry-run]
+    python -m maintainer_bot on-comment      --repo OWNER/NAME --event $GITHUB_EVENT_PATH [--workdir .] [--counts CMD]
+    python -m maintainer_bot dry-run-approve --repo OWNER/NAME [--counts-check CMD --counts-dir PATH] [--out FILE]
+
+Live actions only run inside the GitHub Action (see action.yml); dry-run-approve never writes.
 """
 from __future__ import annotations
 
@@ -68,7 +73,39 @@ def main(argv: list[str] | None = None) -> None:
         r.add_argument("--model", default=os.environ.get("MB_MODEL", "claude-opus-5.5"))
         r.add_argument("--second-model", default=os.environ.get("MB_SECOND_MODEL", "glm-5.3-flash"))
         r.add_argument("--json", action="store_true", help="print the result as JSON")
+    qi = sub.add_parser("queue-issue")
+    qi.add_argument("--repo", required=True)
+    qi.add_argument("--allow", default=os.environ.get("MB_ALLOW_USERS", ""))
+    qi.add_argument("--dry-run", action="store_true")
+    oc = sub.add_parser("on-comment")
+    oc.add_argument("--repo", required=True)
+    oc.add_argument("--event", required=True, help="the issue_comment event JSON ($GITHUB_EVENT_PATH)")
+    oc.add_argument("--allow", default=os.environ.get("MB_ALLOW_USERS", ""))
+    oc.add_argument("--workdir", default="", help="checkout used for bot/* branches (empty: API merges only)")
+    oc.add_argument("--counts", default=os.environ.get("MB_COUNTS_CMD", ""), help="README counts command")
+    oc.add_argument("--ledger", default=os.environ.get("MB_LEDGER", ".maintainer-bot/ledger.jsonl"))
+    oc.add_argument("--daily-cap", type=float, default=float(os.environ.get("MB_DAILY_CAP", "5")))
+    oc.add_argument("--model", default=os.environ.get("MB_MODEL", "claude-opus-5.5"))
+    dr = sub.add_parser("dry-run-approve")
+    dr.add_argument("--repo", required=True)
+    dr.add_argument("--counts-check", default="")
+    dr.add_argument("--counts-dir", default="")
+    dr.add_argument("--out", default="")
     args = ap.parse_args(argv)
+
+    if args.cmd in ("queue-issue", "on-comment", "dry-run-approve"):
+        from .phase2 import cli as p2
+        if args.cmd == "queue-issue":
+            print(json.dumps(p2.queue_issue(args.repo, allow=args.allow, dry_run=args.dry_run)))
+        elif args.cmd == "on-comment":
+            r = p2.on_comment(args.repo, args.event, allow=args.allow, workdir=args.workdir, counts_cmd=args.counts,
+                              ledger_path=args.ledger, cap=args.daily_cap, model=args.model,
+                              git_name=os.environ.get("MB_GIT_NAME", ""), git_email=os.environ.get("MB_GIT_EMAIL", ""))
+            print(json.dumps({k: v for k, v in r.items() if k != "audit"}, default=str))
+        else:
+            print(p2.dry_run_approve(args.repo, counts_check=args.counts_check, counts_dir=args.counts_dir,
+                                     out=args.out))
+        return
 
     if args.cmd in ("review", "backfill"):
         kw = dict(rules_md=open(args.rules, encoding="utf-8").read() if args.rules else None,

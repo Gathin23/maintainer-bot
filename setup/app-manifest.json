@@ -1,0 +1,16 @@
+{
+  "name": "cleanyourtv-maintainer-bot",
+  "url": "https://github.com/Gathin23/maintainer-bot",
+  "description": "Does the maintainer work on CleanYourTV after the owner's /approve: merges, thank-yous, rework asks, kind closes, README counts. Runs on 0G Private Computer.",
+  "public": false,
+  "redirect_url": "https://github.com/Gathin23/cleanyourtv",
+  "hook_attributes": { "url": "https://github.com/Gathin23/maintainer-bot", "active": false },
+  "default_events": [],
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "metadata": "read"
+  }
+}

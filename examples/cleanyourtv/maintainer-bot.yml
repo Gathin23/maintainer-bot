@@ -4,6 +4,7 @@
 # The bot reads the PR through the API (title, body, file list, patches) and reads its rules
 # (.github/maintainer/MAINTAINER.md) and precedents from the default branch, never from the PR.
 # It only writes one sticky comment and labels from a fixed list. It never merges, closes or approves.
+# The bot's own bot/* PRs (phase 2 merges and README counts) are not reviewed.
 name: maintainer-bot
 on:
   pull_request_target:
@@ -26,7 +27,8 @@ concurrency:
 jobs:
   review:
     if: >-
-      (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+      (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+       !startsWith(github.event.pull_request.head.ref, 'bot/')) ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
        startsWith(github.event.comment.body, '/bot review') &&
