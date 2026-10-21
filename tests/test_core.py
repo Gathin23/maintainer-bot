@@ -104,12 +104,53 @@ class MemoryQueueApplyTest(unittest.TestCase):
     def test_queue_and_plan(self):
         ds = [{"pr": 7, "verdict": "merge", "title": "A", "reasons": ["ok"], "priority": "p2", "type": "docs"},
               {"pr": 8, "verdict": "hold", "title": "B", "reasons": ["needs a TV"], "priority": "p1", "type": "launcher"}]
-        md = queue.render(ds, model="glm-5.3", day="2026-10-21", tee=True)
+        md = queue.render(ds, day="2026-10-21")
         self.assertIn("✅ Merge (1)", md)
         self.assertIn("🤔 Needs you (1)", md)
-        self.assertIn("sealed in a TEE", md)
+        self.assertIn("runs on 0G Private Computer", md)
+        for claim in ("sealed", "TEE", "private inference", "glm", "opus"):
+            self.assertNotIn(claim, md)
         acts = apply.plan({7: "merge"}, {d["pr"]: d for d in ds})
         self.assertEqual([a.kind for a in acts], ["merge", "comment"])
+
+
+class V3Test(unittest.TestCase):
+    def test_pr_type(self):
+        from maintainer_bot import checklists
+        self.assertEqual(checklists.pr_type(["examples/acme-x/debloat.txt", "README.md", "examples/README.md"]), "tv-list")
+        self.assertEqual(checklists.pr_type(["launcher/app/src/main/java/A.java", "README.md"]), "launcher")
+        self.assertEqual(checklists.pr_type([".github/workflows/ci.yml"]), "workflow")
+        self.assertEqual(checklists.pr_type(["SHOWCASE.md"]), "showcase")
+        self.assertEqual(checklists.pr_type(["tools/tv.py"]), "tools")
+        self.assertEqual(checklists.pr_type(["docs/REMOTE.md"]), "docs")
+
+    def test_open_overlaps_ignores_shared_tables(self):
+        from maintainer_bot import batch
+        rows = [{"pr": 1, "created_at": "a1", "decided_at": "a5"}, {"pr": 2, "created_at": "a2", "decided_at": "a9"},
+                {"pr": 3, "created_at": "a2", "decided_at": "a9"}]
+        files = {1: ["README.md", "examples/x/debloat.txt"], 2: ["README.md"], 3: ["examples/x/debloat.txt"]}
+        ov = batch.open_overlaps(rows[0], rows, files, {2: "B", 3: "C"})
+        self.assertEqual([o["pr"] for o in ov], [3])
+
+    def test_retrieval_no_leakage(self):
+        from maintainer_bot import retrieval
+        rows = [{"pr": 1, "truth": "merge", "title": "acme tv list", "decided_at": "2026-10-18"},
+                {"pr": 2, "truth": "close", "title": "acme tv list", "decided_at": "2026-10-20"},
+                {"pr": 3, "truth": "rework", "title": "acme tv list", "decided_at": "2026-10-19"}]
+        idx = retrieval.Index(rows, {1: [], 2: [], 3: []}, {})
+        self.assertEqual([r["pr"] for r in idx.similar(rows[2])], [1])
+
+    def test_policy_gates(self):
+        from maintainer_bot import v3
+        base = {"pr": 1, "type": "tv-list", "verdict": "merge", "confidence": 0.9, "reasons": []}
+        kw = dict(threshold=0.8, use_critic=True, use_second=True)
+        self.assertEqual(v3.final(base, {}, **kw)[0], "merge")
+        self.assertEqual(v3.final({**base, "type": "launcher"}, {}, **kw)[0], "hold")
+        self.assertEqual(v3.final({**base, "confidence": 0.5}, {}, **kw)[0], "hold")
+        self.assertEqual(v3.final({**base, "critic": {"blocker": True, "rule": "dup"}}, {}, **kw)[0], "hold")
+        self.assertEqual(v3.final({**base, "second": {"verdict": "close"}}, {}, **kw)[0], "hold")
+        self.assertEqual(v3.final({**base, "second": {"verdict": "merge-with-fix"}}, {}, **kw)[0], "merge")
+        self.assertEqual(v3.final(base, {"binary_files": ["a.apk"]}, **kw)[0], "hold")
 
 
 if __name__ == "__main__":

@@ -11,12 +11,12 @@ GROUPS = [
     ("hold", "🤔 Needs you"),
 ]
 
-FOOTER = ("<sub>Proposed by maintainer-bot, running on 0G Private Computer ({model}). Nothing happens until a "
+FOOTER = ("<sub>Proposed by maintainer-bot · runs on 0G Private Computer. Nothing happens until a "
           "maintainer replies <code>/approve</code>. Commands: <code>/approve</code>, <code>/approve except #N</code>, "
           "<code>/merge #N</code>, <code>/close #N</code>, <code>/rework #N</code>, <code>/hold #N</code>.</sub>")
 
 
-def render(decisions: list[dict], *, model: str, day: str | None = None, tee: bool = False) -> str:
+def render(decisions: list[dict], *, model: str = "", day: str | None = None) -> str:
     day = day or date.today().isoformat()
     lines = [f"## Today's queue · {day}", ""]
     counts = {k: sum(1 for d in decisions if d["verdict"] == k) for k, _ in GROUPS}
@@ -39,6 +39,7 @@ def render(decisions: list[dict], *, model: str, day: str | None = None, tee: bo
             lines.append(f"- [ ] #{d['pr']} **{d.get('title', '')[:90]}** · {d.get('priority', 'p2')} · "
                          f"{d.get('type', '')}<br>{reason}{extra}")
         lines.append("")
-    model_txt = f"{model}, sealed in a TEE" if tee else model
-    lines.append(FOOTER.format(model=model_txt))
+    # the footer names the platform only: no model, and no "private"/"sealed" claim (the default decision
+    # model is a standard-routed one on 0G PC)
+    lines.append(FOOTER)
     return "\n".join(lines)

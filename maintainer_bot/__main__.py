@@ -46,7 +46,6 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--results", required=True)
     q.add_argument("--prs", default="")
     q.add_argument("--model", required=True)
-    q.add_argument("--tee", action="store_true")
     a = sub.add_parser("approve")
     a.add_argument("--results", required=True)
     a.add_argument("--prs", default="")
@@ -71,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
             keep = {int(x) for x in args.prs.split(",") if x.strip()}
             res = {k: v for k, v in res.items() if k in keep}
         if args.cmd == "queue":
-            print(queue.render(list(res.values()), model=args.model, tee=args.tee))
+            print(queue.render(list(res.values()), model=args.model))
         else:
             approval = commands.parse(args.comment)
             if not approval:

@@ -40,3 +40,27 @@ tested TV lists under `examples/<tv>/`, translations, docs, small launcher optio
 
 ## Comment style
 Short, human, thankful. Name what changed on merge. Rework asks are one line. Closes are kind.
+
+## Learned from past decisions (rule mining on rounds before 21 Oct, reviewed)
+- A PR that bundles several good, separable parts gets **rework** with one ask: split it into separate PRs
+  (list each part and what it needs). Close a bundle only when its idea has already landed another way or it
+  has fallen far behind main. A device's list plus small fixes for that same device can be one PR.
+- Contributor PRs whose main content is a new CI workflow that builds or publishes releases (for example a
+  "latest" APK on every push), especially without a description or bundled with other changes: **close**
+  kindly. Hold is for workflow changes that are clearly argued and could plausibly be adopted.
+- Launcher bug fixes that correct wrong behaviour (focus or highlight glitches, the wrong tuner or activity
+  opened) need no config flag and no new TV-run hold when the author tested on a device; the TV-run hold is
+  for new visible features. A good feature with a small performance issue can be merge-with-fix.
+- Anything against the base rule ("no root, nothing uninstalled, you build it yourself") is **closed**
+  kindly, even if it is only docs or a showcase row: root exploits, getting around app-store protection,
+  private or modified builds others can't reproduce from this repo, and extras added to the PROMPT flow
+  beyond debloating (system-wide DNS or ad blocking). Point to a public, reproducible version if there is one.
+  (Prebuilt APKs committed to this repo stay **hold**: the maintainer decides.)
+- Check "off by default" in the diff, not the description: the flag exists in config.xml, the theme JSON and
+  the themes/README table, and with the flag off nothing new runs (no receivers, no writes, no permission
+  grants in the install script). If something runs while the flag is off → **rework**.
+- When two open PRs build the same helper or fix, pick one as its home and ask the other author to fold their
+  part in (rework, not hold). If another PR already fixes the same thing more completely, close the narrower one.
+- A launcher change that is a different design or taste for everyone (for example its own sounds replacing the
+  system click), while the author is still deciding on an opt-in version → **hold**, and add the author's
+  branch to SHOWCASE.md meanwhile.

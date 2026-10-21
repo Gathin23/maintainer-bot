@@ -2,8 +2,7 @@
 
 A maintainer bot for busy open-source repos. It reads every pull request, decides what should happen to it
 the way **your** maintainer would, posts one daily queue, and does the work after you reply `/approve`.
-It runs on [0G Private Computer](https://pc.0g.ai): one API key, many models, and sealed (TEE) models when you
-want private inference.
+It runs on [0G Private Computer](https://pc.0g.ai): one API key, many models.
 
 Built for [CleanYourTV](https://github.com/Gathin23/cleanyourtv), which got 500+ pull requests in four days.
 
@@ -56,8 +55,10 @@ A spend ledger enforces a hard cap (`--cap`, default $25).
 
 ## Wording about 0G
 
-"Runs on 0G Private Computer" is always accurate. "Private" or "sealed in a TEE" only for TeeML models
-(for example `glm-5.3`, `0gm-1.0-35b-a3b`), not for standard-routed ones.
+Every comment and queue says only "runs on 0G Private Computer", which is always accurate. The default
+decision model (Claude Opus 5.5 via the 0G router) is standard-routed, so the bot never calls itself
+"private", "sealed" or "TEE". If you switch to a TeeML model (for example `glm-5.3`, `0gm-1.0-35b-a3b`)
+you may say "private inference" in your own posts; the footer stays the same.
 
 ## Licence
 
