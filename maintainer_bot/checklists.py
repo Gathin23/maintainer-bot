@@ -59,6 +59,9 @@ ALWAYS_MAINTAINER = {"launcher", "workflow"}
 CHECKLISTS_V4 = {
     **CHECKLISTS,
     "tv-list": CHECKLISTS["tv-list"] + """
+- Never Android's core packages (#884: permission controller, package installer, ext services/shared, module
+  metadata, mainline overlays, systemui, shell, phone, settings, tv.settings, providers except calendar/contacts/
+  userdictionary/blockednumber): tools/disable.sh refuses such a list → rework.
 - Disabling only: `pm uninstall` steps → rework (drop them). A Private DNS / AdGuard setup in the folder is
   dropped on merge (the main README already has the optional DNS extra). The folder's own install/restore
   scripts are dropped on merge; the README points at tools/disable.sh and tools/restore.sh.
@@ -88,7 +91,10 @@ CHECKLISTS_V4 = {
 - Needs themes/<name>/screenshot.jpg: Home on a real TV with the theme (missing → merge-with-fix only if the
   author can add it easily, else rework). Festival/seasonal themes need a festival_until date.
 - Only keys the launcher already reads; a theme that needs new launcher code is a launcher PR.""",
-    "addon": """- addons/<name>/ is its own Gradle app that plugs into Home only through the module-card spec.
+    "addon": """- It already is an add-on: judge it on its merits (merge / merge-with-fix / rework), never "addon".
+- addons/<name>/ is its own Gradle app that plugs into Home only through the module-card spec. Its
+  gradle/wrapper/gradle-wrapper.jar is required by the add-ons CI, not a prebuilt binary.
+- An add-on that does what an existing add-on already does (same source, same card) → rework: fold it in.
 - Never touches launcher/ (a PR that does → rework: keep it to addons/<name>/). No APKs in the repo.
 - Its README has a Permissions heading; addons/README.md gets an index row; the author maintains it.
 - Network access is allowed in an add-on if its README says so; it never makes the core bigger.""",

@@ -49,7 +49,7 @@ def _blob(git_dir: str, commit: str, path: str) -> str | None:
 
 @lru_cache(maxsize=512)
 def commit_at(git_dir: str, when: str, branch: str = "origin/main") -> str:
-    r = subprocess.run(["git", "-C", git_dir, "rev-list", "-1", f"--before={when}", branch],
+    r = subprocess.run(["git", "-C", git_dir, "rev-list", "-1", "--first-parent", f"--before={when}", branch],
                        capture_output=True, text=True)
     return r.stdout.strip()
 

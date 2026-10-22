@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass, field
 
 BINARY_EXT = (".apk", ".aab", ".so", ".jar", ".aar", ".dex", ".exe", ".dll", ".bin", ".zip")
+# not prebuilt apps: the Gradle wrapper an add-on's own build needs (.github/workflows/addons.yml runs ./gradlew)
+ALLOWED_BINARY_RE = re.compile(r"^addons/[^/]+/gradle/wrapper/gradle-wrapper\.jar$")
 
 
 @dataclass
@@ -30,6 +32,13 @@ class RepoRules:
         "com.google.android.katniss.setup", "com.android.providers.tv",
     )
     protected_keywords: tuple = ()
+    # Android's core packages (cleanyourtv #884, tools/recovery.py): the TV may not boot again without them;
+    # tools/disable.sh refuses a list naming one, so a list that does is sent back
+    core_re: str = (r"^(android|com\.android\.systemui|com\.android\.shell|com\.android\.phone|com\.android\.settings|"
+                    r"com\.android\.tv\.settings|com\.(google\.)?android\.(permissioncontroller|packageinstaller|"
+                    r"ext\.services|ext\.shared|modulemetadata)|com\.google\.android\.overlay\.modules.*|"
+                    r"com\.android\.providers\..*)$")
+    core_ok: str = r"^com\.android\.providers\.(calendar|contacts|userdictionary|blockednumber)$"
     # paths whose changes always need the maintainer
     sensitive_paths: tuple = (".github/", "PROMPT.md", "tools/disable", "tools/restore", "launcher/app/build.gradle",
                               ".opencodereview/", ".github/maintainer/")
@@ -57,7 +66,13 @@ class RepoRules:
 PAIRING_INPUT_RE = re.compile(r"autopair|bt_?rcu|rcu_?pair|remote_?pair|btpair|bluetooth.*pair|pair.*bluetooth|"
                               r"inputmethod|\.ime(\.|$)|_ime$|\.ime_|keyboard", re.I)
 PKG_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+)\b")
-HIDE_RE = re.compile(r"\bpm\s+(hide|block)\b|^\s*(hide|block)\s+[a-zA-Z]", re.I)
+# a pm hide/block step on a package, or a list line "hide <package>"; prose ("…, which doesn't
+# block YouTube ads") must never count (#982 got an invented pm hide from a wrapped README sentence)
+HIDE_RE = re.compile(r"\bpm\s+(hide|block)\s+(?:--user\s+\d+\s+)?[a-zA-Z]\w*(?:\.\w+)+|"
+                     r"^\s*(hide|block)\s+[a-zA-Z]\w*(?:\.\w+)+\s*$", re.I)
+# in a list file's header, saying the list is applied with pm hide/block is enough ("Use `pm hide` instead")
+PM_HIDE_RE = re.compile(r"\b(use|using|with|via|swap to|apply|applied|run)\b[^.\n]{0,20}\bpm\s+(hide|block)\b|"
+                        r"\bpm\s+(hide|block)\s+<", re.I)
 UNDO_RE = re.compile(r"\bpm\s+(unhide|unblock)\b|\b(unhide|unblock)\b", re.I)
 
 
@@ -74,6 +89,23 @@ def _list_package(line: str) -> str:
 
 def _added_lines(patch: str) -> list[str]:
     return [l[1:] for l in (patch or "").splitlines() if l.startswith("+") and not l.startswith("+++")]
+
+
+def _code_lines(lines: list[str]) -> list[str]:
+    """Lines that are code, not comments: no <!-- … --> XML comments, // or /* … */ or * javadoc lines."""
+    out, in_xml = [], False
+    for l in lines:
+        s = l.strip()
+        if in_xml:
+            in_xml = "-->" not in s
+            continue
+        if s.startswith("<!--"):
+            in_xml = "-->" not in s
+            continue
+        if s.startswith(("//", "/*", "*")):
+            continue
+        out.append(l.split("//", 1)[0] if "://" not in l else l)
+    return out
 
 
 def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_folders: set | None = None,
@@ -104,7 +136,7 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
                                    for fi in files for p in [fi["path"]])]
     competing = {f: prs for f, prs in (other_open_list_folders or {}).items() if f in list_folders and prs}
 
-    protected_hits = []
+    protected_hits, core_hits, evidence = [], [], {}
     for f in files:
         if not re.match(rules.list_file_re, f["path"]):
             continue
@@ -112,9 +144,13 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            pkg = s.split()[0]
+            pkg = _list_package(line) or s.split()[0]
             if pkg in rules.protected_packages or any(k in pkg.lower() for k in rules.protected_keywords):
                 protected_hits.append(pkg)
+                evidence.setdefault("protected_packages_disabled", s[:120])
+            if re.match(rules.core_re, pkg) and not re.match(rules.core_ok, pkg):
+                core_hits.append(pkg)
+                evidence.setdefault("core_packages_disabled", s[:120])
 
     pairing_input = []
     hide_lines, has_undo = [], False
@@ -125,18 +161,26 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
         if any(UNDO_RE.search(l) for l in added):
             has_undo = True
         for line in added:
-            if HIDE_RE.search(line.split("#", 1)[0]):
+            in_list = bool(re.match(rules.list_file_re, f["path"]))
+            if HIDE_RE.search(line.split("#", 1)[0]) or HIDE_RE.search(line.strip().lstrip("#").strip()) or (
+                    in_list and PM_HIDE_RE.search(line)):
                 hide_lines.append(line.strip()[:80])
             if not re.match(rules.list_file_re, f["path"]):
                 continue
             pkg = _list_package(line)
             if pkg and PAIRING_INPUT_RE.search(pkg) and pkg not in rules.protected_packages:
                 pairing_input.append(pkg)
+                evidence.setdefault("pairing_or_input_packages_disabled", line.strip()[:120])
     hide_without_undo = sorted(set(hide_lines)) if hide_lines and not has_undo else []
+    if hide_without_undo:
+        evidence["hide_without_undo"] = hide_without_undo[0]
 
-    adds_internet = any(f["path"] == rules.manifest_path and "android.permission.INTERNET" in "\n".join(
-        _added_lines(f.get("patch", ""))) for f in files)
-    binaries = [p for p in paths if p.lower().endswith(BINARY_EXT)]
+    internet = [l.strip() for f in files if f["path"] == rules.manifest_path
+                for l in _code_lines(_added_lines(f.get("patch", ""))) if "android.permission.INTERNET" in l]
+    adds_internet = bool(internet)
+    if internet:
+        evidence["adds_internet_permission"] = internet[0][:120]
+    binaries = [p for p in paths if p.lower().endswith(BINARY_EXT) and not ALLOWED_BINARY_RE.match(p)]
     sensitive = sorted({p for p in paths for s in rules.sensitive_paths if p.startswith(s)})
 
     new_strings = 0
@@ -157,6 +201,8 @@ def compute(snapshot: dict, rules: RepoRules | None = None, *, existing_list_fol
         "duplicate_of_merged_folder": duplicate_of_merged,
         "competing_open_prs": competing,
         "protected_packages_disabled": sorted(set(protected_hits)),
+        "core_packages_disabled": sorted(set(core_hits)),
+        "evidence": evidence,
         "pairing_or_input_packages_disabled": sorted(set(pairing_input)),
         "hide_without_undo": hide_without_undo,
         "adds_internet_permission": adds_internet,
@@ -324,7 +370,7 @@ def core_facts(files: list[dict], rules: RepoRules, *, main_locales: list[str] |
         added = _added_lines(f.get("patch", ""))
         changed = added + _removed_lines(f.get("patch", ""))
         if f["path"].endswith("AndroidManifest.xml"):
-            perms += [m.group(1) for l in added if (m := PERMISSION_RE.search(l))]
+            perms += [m.group(1) for l in _code_lines(added) if (m := PERMISSION_RE.search(l))]
             for kind, rx in MANIFEST_KINDS:
                 if any(re.search(rx, l) for l in changed):
                     manifest.add(kind)
@@ -333,7 +379,7 @@ def core_facts(files: list[dict], rules: RepoRules, *, main_locales: list[str] |
             if "home intent" in manifest:
                 home.append(f["path"])
         elif f["path"].endswith((".java", ".kt")):
-            net += sorted({m.group(1) for l in added if (m := NETWORK_RE.search(l.split("//", 1)[0]))})
+            net += sorted({m.group(1) for l in _code_lines(added) if (m := NETWORK_RE.search(l))})
         if f["path"] in rules.home_path_files or (
                 f["path"] == rules.home_path_file and any(LIFECYCLE_RE.search(l) for l in changed)):
             home.append(f["path"])
@@ -507,3 +553,96 @@ def compute_v4(snapshot: dict, rules: RepoRules | None = None, *, existing_list_
             fx["apk_gate_bytes"] = apk_gate_bytes
             fx["apk_over_gate"] = apk_bytes >= apk_gate_bytes
     return fx
+
+
+# ---------- v4.1: duplicates of other open PRs and of recent work on main ----------
+
+SHARED_FILES = {".gitignore", ".gitattributes", "README.md", "examples/README.md", "SHOWCASE.md", "README.zh-CN.md", "addons/README.md",
+                "themes/README.md", "docs/TROUBLESHOOTING.md", "CONTRIBUTING.md", "AGENTS.md", "PROMPT.md",
+                "launcher/app/src/main/java/com/gathin/tvhome/Config.java",
+                "launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java",
+                "launcher/app/src/main/res/values/config.xml", "launcher/app/src/main/res/values/strings.xml"}
+ISSUE_RE = re.compile(r"(?<![\w/])#(\d{1,6})\b")
+TITLE_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}")
+TITLE_STOP = {"the", "and", "for", "with", "from", "into", "add", "adds", "fix", "fixes", "launcher", "docs",
+              "examples", "list", "debloat", "tools", "when", "not", "its", "this", "that", "only"}
+
+
+def _meaningful(path: str) -> bool:
+    return path not in SHARED_FILES and not re.search(r"/values-[^/]+/strings\.xml$", path)
+
+
+def title_words(title: str) -> set[str]:
+    return {w for w in TITLE_WORD_RE.findall((title or "").lower()) if w not in TITLE_STOP}
+
+
+CLOSING_RE = re.compile(r"\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?|addresse?s?|for)\s+#(\d{1,6})\b", re.I)
+
+
+def issue_refs(pr: dict) -> set[int]:
+    """The issue a PR is about: any #N in its title, or "fixes/closes/resolves/for #N" in its body (a body's
+    passing mention of another PR is not enough)."""
+    refs = {int(n) for n in ISSUE_RE.findall(pr.get("title") or "")}
+    refs |= {int(n) for n in CLOSING_RE.findall(pr.get("body") or "")}
+    refs.discard(pr.get("pr") or pr.get("number") or -1)
+    return refs
+
+
+def added_lines_of(file_patches: list[dict]) -> set[str]:
+    return {l.strip() for f in file_patches or [] if _meaningful(f["path"])
+            for l in _added_lines(f.get("patch", "")) if len(l.strip()) > 12}
+
+
+def duplicate_facts(me: dict, others: list[dict], *, recent_commits: list[dict] | None = None,
+                    main_texts: dict | None = None) -> dict:
+    """Possible duplicates for one PR.
+
+    me / others: {"pr", "title", "body", "created_at", "files": [paths], "added": {lines}} (others: PRs open when
+    this one was reviewed, plus PRs merged in the last 7 days with "merged": True). Of two open PRs doing the
+    same, only the later one is the duplicate; a merged one makes this one a duplicate whatever its age. A PR
+    stacked on another ("contained": its commits are part of this PR) is a series, not a duplicate.
+    Strong = shares a meaningful file AND (the same referenced issue, a near-identical title, or most of the
+    same added lines)."""
+    out: dict = {}
+    mine = {p for p in me["files"] if _meaningful(p)}
+    my_added = me.get("added") or added_lines_of(me.get("file_patches"))
+    refs, words = issue_refs(me), title_words(me["title"])
+    dups = []
+    for o in others:
+        if o["pr"] == me["pr"] or o.get("contained") or (not o.get("merged") and o["created_at"] >= me["created_at"]):
+            continue
+        shared = sorted(mine & {p for p in o.get("files", []) if _meaningful(p)})
+        same_issue = sorted(refs & issue_refs(o))
+        ow = title_words(o["title"])
+        jacc = len(words & ow) / len(words | ow) if words and ow else 0
+        overlap = len(my_added & set(o.get("added") or ())) / len(my_added) if my_added else 0
+        if not (same_issue or jacc >= 0.5 or (shared and overlap >= 0.5)):
+            continue
+        strong = bool(shared) and (bool(same_issue) or jacc >= 0.6 or overlap >= 0.5)
+        why = "; ".join(x for x in ("already merged" if o.get("merged") else "",
+                                    f"same issue #{same_issue[0]}" if same_issue else "",
+                                    "a near-identical title" if jacc >= 0.5 else "",
+                                    f"{overlap:.0%} of the same added lines" if overlap >= 0.5 else "",
+                                    ("same files: " + ", ".join(shared[:3])) if shared else "") if x)
+        dups.append({"pr": o["pr"], "title": o["title"][:90], "why": why, "strong": strong,
+                     "merged": bool(o.get("merged"))})
+    if dups:
+        out["possible_duplicates"] = sorted(dups, key=lambda d: (not d["strong"], d["pr"]))[:4]
+    for c in recent_commits or []:
+        shared = sorted(mine & {p for p in c.get("files", []) if _meaningful(p)})
+        same_issue = refs & {int(n) for n in ISSUE_RE.findall(c.get("message", ""))}
+        if shared and same_issue:
+            out.setdefault("recent_main_commits", []).append(
+                {"sha": c["sha"][:8], "why": f"same issue #{sorted(same_issue)[0]}, same files: {', '.join(shared[:3])}"})
+    if main_texts:
+        total = found = 0
+        for f in me.get("file_patches") or []:
+            if not _meaningful(f["path"]) or f["path"] not in main_texts or main_texts[f["path"]] is None:
+                continue
+            added = [l.strip() for l in _added_lines(f.get("patch", "")) if len(l.strip()) > 12]
+            total += len(added)
+            found += sum(1 for a in added if a in main_texts[f["path"]])
+        if total >= 3 and found / total >= 0.9:
+            commit = (out.get("recent_main_commits") or [{}])[0].get("sha", "")
+            out["already_on_main_live"] = {"share": round(found / total, 2), "commit": commit}
+    return out

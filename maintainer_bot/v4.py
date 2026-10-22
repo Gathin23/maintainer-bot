@@ -56,7 +56,9 @@ app (a module card) without touching the launcher; showcase when it is a big in-
 permission or network access, an old-Android port, a Home takeover or a different launcher (it lives in the
 contributor's fork, with one row in SHOWCASE.md); rework when one clear change makes it mergeable; close for
 duplicates, superseded work or anything against the base rules; hold only when a maintainer decision or a
-real-TV run is genuinely needed. Set confidence honestly: below 0.7 when precedent is mixed or facts are missing.
+real-TV run is genuinely needed. A PR that is already an add-on (its files under addons/<name>/) is judged
+on its merits (merge, merge-with-fix, rework), never "addon". When the facts list a likely duplicate (an earlier
+open PR or main already does the same), say close and name it, or explain why both should stay. Set confidence honestly: below 0.7 when precedent is mixed or facts are missing.
 Be brief: each reason is one short sentence, the comment at most two. Call set_verdict exactly once."""
 
 TOOL = {
@@ -110,7 +112,8 @@ FACT_ORDER = ("always_maintainer_paths", "sensitive_paths", "protected_packages_
               "apk_bytes", "apk_gate_bytes", "apk_over_gate", "list_folders", "new_list_folders",
               "duplicate_of_merged_folder", "edits_existing_list", "same_product_on_main", "competing_open_prs",
               "uninstall_steps", "private_dns_setup", "firmware_updater_disabled", "untested_entries",
-              "list_folder_scripts", "unlinked_images", "stray_root_files", "theme_folders", "theme_missing_screenshot", "addon_folders",
+              "list_folder_scripts", "unlinked_images", "stray_root_files", "core_packages_disabled",
+              "conflict_files", "possible_duplicates", "already_on_main_live", "theme_folders", "theme_missing_screenshot", "addon_folders",
               "addon_touches_launcher", "addon_readme_missing_permissions", "similar_titles_open_at_the_time",
               "size", "additions", "deletions", "files", "top_dirs")
 
@@ -247,6 +250,39 @@ POLICY = {
 }
 
 
+def rebase_ask(fx: dict) -> str:
+    files = [f for f in (fx.get("conflict_files") or []) if isinstance(f, str)]
+    where = (" in " + ", ".join(f"`{f}`" for f in files[:5]) + (" and more" if len(files) > 5 else "")) if files else ""
+    return f"please rebase onto main: it conflicts with main{where}"
+
+
+def duplicate_of(fx: dict) -> str:
+    """A strong duplicate: an earlier open PR doing the same (same issue or title, same files), or the change is
+    already on main. Weak matches are only noted in the comment."""
+    strong = [d for d in fx.get("possible_duplicates") or [] if d.get("strong")]
+    if strong:
+        d = strong[0]
+        return f"likely a duplicate of #{d['pr']} ({d['why']})"
+    aom = fx.get("already_on_main_live") or {}
+    if aom.get("share", 0) >= 0.9:
+        return "what it adds is already on main" + (f" ({aom['commit']})" if aom.get("commit") else "")
+    return ""
+
+
+def lean(res: dict) -> tuple[str, float] | None:
+    """Where the model (or, when it held, the second opinion) leans, for a PR that goes to the maintainer."""
+    word = {"accept": "merge", "rework": "rework", "theme": "rework", "close": "close", "showcase": "close",
+            "addon": "close"}
+    f = family(res.get("verdict"))
+    if f in word and res.get("verdict") != "hold":
+        return word[f], float(res.get("confidence") or 0)
+    s = res.get("second") or {}
+    f2 = family(s.get("verdict"))
+    if s.get("verdict") and f2 in word:
+        return word[f2], float(s.get("confidence") or 0)
+    return None
+
+
 def always_maintainer(fx: dict) -> str:
     """Kinds of change the maintainer always decides, whatever the verdict: safety rules and PROMPT.md, CI and
     workflows, the bot's own rules, protected packages."""
@@ -356,11 +392,29 @@ def final(res: dict, fx: dict, policy: dict | None = None) -> tuple[str, str, st
     """The bot's action for one PR: (verdict, why it went to the maintainer or was changed, fix to add)."""
     p = {**POLICY, **(policy or {})}
     v = res["verdict"]
+    if fx.get("always_maintainer_paths"):
+        return "hold", always_maintainer(fx), ""
+    if fx.get("core_packages_disabled"):
+        ask = (f"please remove {', '.join(fx['core_packages_disabled'][:4])} from the list: Android's core packages "
+               "must stay enabled (#884), and tools/disable.sh refuses a list that names one")
+        return "rework", ask, ask
     why = always_maintainer(fx)
     if why:
         return "hold", why, ""
+    if fx.get("conflicts_with_main") and not (v in ("close", "showcase", "addon")
+                                              and res.get("confidence", 0) >= p["threshold"]):
+        ask = rebase_ask(fx)
+        return "rework", ask, ask
+    if v == "addon" and fx.get("addon_folders"):
+        # the PR already is an add-on: the "send it again under addons/" invitation would be wrong (#870, #984)
+        return "hold", "it is already an add-on under addons/; the bot's own verdict didn't judge it on its merits", ""
     if v == "hold":
         return "hold", "the bot asks for a maintainer decision", ""
+    dup = duplicate_of(fx)
+    if dup:
+        if v == "close" and res.get("confidence", 0) >= p["threshold"]:
+            return "close", "", ""
+        return "hold", dup, ""
     if same_product(fx) and res.get("confidence", 0) < p["same_product_threshold"]:
         # "fold it into the existing folder" is as much a judgement call as "merge it as its own folder"
         return "hold", same_product(fx) + f" (confidence {res.get('confidence', 0):.2f} < {p['same_product_threshold']})", ""

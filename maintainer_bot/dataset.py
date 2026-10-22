@@ -116,7 +116,7 @@ def trim_diff(files: list[dict]) -> str:
 
 
 def list_folders_at(git_dir: str, when: str, branch: str = "origin/main") -> set[str]:
-    commit = sh(["git", "rev-list", "-1", f"--before={when}", branch], cwd=git_dir).strip()
+    commit = sh(["git", "rev-list", "-1", "--first-parent", f"--before={when}", branch], cwd=git_dir).strip()
     if not commit:
         return set()
     names = sh(["git", "ls-tree", "--name-only", f"{commit}:examples"], cwd=git_dir, check=False)
@@ -135,7 +135,7 @@ def locale_count_at_commit(git_dir: str, commit: str) -> int:
 
 def locale_count_at(git_dir: str, when: str, branch: str = "origin/main") -> int:
     """How many translated launcher strings.xml files existed on main at that time."""
-    commit = sh(["git", "rev-list", "-1", f"--before={when}", branch], cwd=git_dir).strip()
+    commit = sh(["git", "rev-list", "-1", "--first-parent", f"--before={when}", branch], cwd=git_dir).strip()
     if not commit:
         return 0
     names = sh(["git", "ls-tree", "-r", "--name-only", commit, "launcher/app/src/main/res"], cwd=git_dir, check=False)

@@ -22,7 +22,11 @@ or requests changes. **Phase 2** (below) acts, but only on a maintainer's `/appr
   - "Reviewed by maintainer-bot · runs on 0G Private Computer"
 - Labels from a fixed list only: `bot-suggests:merge`, `bot-suggests:merge-with-fix`,
   `bot-suggests:rework`, `bot-suggests:close`, `bot-suggests:showcase`, `bot-suggests:addon`,
-  `bot-suggests:theme`, `needs-maintainer`, `p0`–`p3`, and the repo's type labels. It removes only labels it owns.
+  `bot-suggests:theme`, `needs-maintainer`, `bot-leans:merge` / `bot-leans:rework` / `bot-leans:close` (where a
+  held PR leans; the comment's first line says "Leans: merge (72%)"), `p0`–`p3`, and the repo's type labels. It
+  removes only labels it owns.
+- If the model refuses or can't answer, the PR still gets a short comment ("Couldn't review this one
+  automatically; it goes to the maintainer") and `needs-maintainer`.
 
 ## A small core and a well-indexed hub (v4)
 
@@ -48,7 +52,9 @@ switches the bot may suggest merging.
                         pm hide without an undo, binaries; launcher: new config keys and defaults, strings per
                         locale, lines changed, permissions, network use, manifest, Home path, conflicts, CI,
                         APK size; lists: uninstall steps, Private DNS setup, own scripts, untested entries,
-                        the same product on main, edits to a list on main; stray files; maintainer-only paths
+                        the same product on main, edits to a list on main, Android core packages; stray files;
+                        conflicts with main (and the files); duplicates of earlier or recently merged PRs;
+                        maintainer-only paths. Hard flags quote the diff line they came from.
 2. Decision (AI)        your rules (MAINTAINER.md) + a checklist for this kind of PR + your past decisions
                         on the most similar PRs, with the reasons you gave
 3. Critic (AI)          for every merge of code or judgement-call merge: "the strongest rule-backed reason
@@ -78,7 +84,8 @@ Backtested on CleanYourTV's real history (train on older rounds, test on newer o
 
 ```bash
 for l in bot-suggests:merge bot-suggests:merge-with-fix bot-suggests:rework bot-suggests:close \
-         bot-suggests:showcase bot-suggests:addon bot-suggests:theme needs-maintainer p0 p1 p2 p3; do
+         bot-suggests:showcase bot-suggests:addon bot-suggests:theme needs-maintainer \
+         bot-leans:merge bot-leans:rework bot-leans:close p0 p1 p2 p3; do
   gh label create "$l" -R OWNER/NAME --force
 done
 ```

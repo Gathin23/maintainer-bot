@@ -1,12 +1,12 @@
 # How CleanYourTV PRs are reviewed
 
 CleanYourTV (Gathin23/cleanyourtv) is a prompt plus tools that debloat Android TV / Google TV / Fire TV over
-ADB and a tiny native launcher (`launcher/`, plain Java, ~445 KB, for 1 GB TVs). Contributors mostly add
+ADB and a tiny native launcher (`launcher/`, plain Java, ~471 KB, for 1 GB TVs). Contributors mostly add
 tested TV lists under `examples/<tv>/`, translations, docs, small launcher options, themes, add-ons and tools.
 
 ## The policy: a small core plus a well-indexed hub
 The main repo stays small and simple: the prompt, tested TV lists, the safety rules and a small, stable
-launcher under the APK size gate (`.github/workflows/ci.yml`, currently 471,040 B). Bigger ideas live next to
+launcher under the APK size gate (`.github/workflows/ci.yml`, currently 491,520 B). Bigger ideas live next to
 it, and every one of them gets a home. Pick the smallest home that fits (CONTRIBUTING, "Where does my idea go?"):
 
 | The idea | Where it goes | Verdict |
@@ -44,6 +44,10 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
   remote and Bluetooth pairing, the keyboard, Play Store and Play Services. Disabling
   `com.google.android.tungsten.setupwraith` is normal on Google TV lists (it gives Home back but costs casting;
   the list header should say so). Factory/AT packages may be disabled, never launched.
+- Never Android's core packages (#884): the permission controller, package installer, ext services/shared,
+  module metadata, the mainline overlays (`com.google.android.overlay.modules*`), systemui, shell, phone,
+  settings, tv.settings, `android` and `com.android.providers.*` (calendar, contacts, userdictionary and
+  blockednumber are fine). `tools/disable.sh` refuses such a list, so it is a **rework**: remove them.
 - `pm uninstall` steps in a list folder → **rework**: keep the folder to disabling only.
 - A Private DNS / AdGuard setup inside a list folder is dropped on merge (the main README already has the
   optional DNS extra); a note that "Private DNS works on this set" is fine.
@@ -51,11 +55,10 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
   `tools/restore.sh`.
 - Entries the author marks untested are commented out on merge until tested. The TV's own firmware updater is
   better kept enabled; if a list disables it, the header must say why.
-- Same product code and firmware as a folder already on main: a second unit or a re-badged set of the same model
-  (another region's variant, a different badge) → **rework**: fold the notes into that folder. A different model
-  number whose list makes its own choices can be its own folder even on the same board and firmware (TCL C89B
-  #653, Q7C #735 and G08 EU #657 were all merged as their own folders next to the 85RM7L list). It is a judgement
-  call: set confidence accordingly.
+- Same product code and firmware as a folder already on main: usually a second unit, a re-badge or a sibling
+  size of the same set → **rework**: fold the notes into that folder, as a second unit or variant (#648, #751,
+  #752, #794, #798 were all sent back for this). A different model whose list makes clearly different choices
+  can be its own folder (#653, #768). It is a judgement call: set confidence accordingly.
 - Edits to a list already on main (second units, notes, corrections) are judgement calls; decide only when the
   change is clearly right.
 - A new list needs its row in README and examples/README (missing → merge-with-fix: add the rows).
@@ -68,10 +71,18 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
 - Changes to the safety rules in PROMPT.md, the Home-safety logic in the scripts, the China TCL rule,
   CI/workflows or the APK size gate need the maintainer: **hold**.
 - Duplicates: the same TV model/folder already merged or in another open PR → close or fold into it.
-- One design per feature: if two PRs do the same thing, keep one (merge or rework the other into it).
+- One design per feature: if two PRs do the same thing, keep one (merge or rework the other into it). The hold-OK
+  tile menu family is one design (#464, with #746); other tile menus fold into it (#687's Menu-key trigger).
 - A PR that bundles several good, separable parts gets **rework**: split it (list each part). A device's list plus
   small fixes for that same device can be one PR. A list bundled inside a launcher feature PR goes as its own PR.
-- A PR that conflicts with main in code (not just README table rows) gets a kind rebase request (**rework**).
+- A PR that conflicts with main gets a kind rebase request (**rework**) naming the conflicting files, whatever
+  else is true of it (approved 22 Oct).
+- Duplicates: when an earlier open PR, or a PR merged in the last week, fixes the same issue in the same files
+  (or adds mostly the same lines), the later PR is the duplicate: **close** it and name the other one (#873 after
+  #842, #947 after #924). A stacked series (one PR built on another) is not a duplicate.
+- A PR that already is an add-on (`addons/<name>/`) is judged on its merits (merge, merge-with-fix, rework),
+  never sent "to addons/". Its `gradle/wrapper/gradle-wrapper.jar` is required by the add-ons CI, not a
+  prebuilt binary. An add-on that duplicates an existing one (same source, same card) folds into it (#972).
 - Files nothing links to (screenshots, stray root files, unrelated build changes) are dropped on merge.
 - Press and coverage rows need a source that could be opened and checked; leave out what can't be verified.
 - Docs and README must stay in step: a new list needs its row in README and examples/README.
@@ -95,3 +106,12 @@ review.
 - Contributor PRs whose main content is a new CI workflow that builds or publishes releases: **close** kindly.
 - A launcher PR that adds the INTERNET permission or network access → **showcase**; if it carries a TV list, ask
   for the list as its own PR in the same comment.
+
+## Learned from the 21–22 Oct rounds (reviewed)
+- A translation PR that moves hard-coded strings into resources is welcome; unrelated build changes riding along
+  (a test runner in build.gradle) and screenshots nothing links to are dropped on merge (#640).
+- A Home-guard or install-script change needs a dry run on a TV whose Home claimants include factory-test
+  launchers (`com.duokan.factorytest/.FactoryLauncher` on Xiaomi), not only the unit tests (#565).
+- Launcher PRs that changed the default for every TV (an App library grid, a crossfade on every rotation, the
+  clock screensaver showing wallpapers) went to the showcase rather than back for rework (#672, #673, #674); a
+  small switch that only needs its default turned off is still a rework.

@@ -26,6 +26,7 @@ import requests
 
 from . import checklists, facts as facts_mod, retrieval, templates, v4
 from .ledger import BudgetExceeded, Ledger
+from .router import ToolCallFailed
 
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- maintainer-bot"
@@ -40,7 +41,8 @@ VERDICT_LABELS = {"merge": "bot-suggests:merge", "merge-with-fix": "bot-suggests
                   "showcase": "bot-suggests:showcase", "addon": "bot-suggests:addon", "theme": "bot-suggests:theme",
                   "hold": "needs-maintainer"}
 PRIORITY_LABELS = ("p0", "p1", "p2", "p3")
-BOT_OWNED = set(VERDICT_LABELS.values()) | set(PRIORITY_LABELS)
+LEAN_LABELS = {"merge": "bot-leans:merge", "rework": "bot-leans:rework", "close": "bot-leans:close"}
+BOT_OWNED = set(VERDICT_LABELS.values()) | set(PRIORITY_LABELS) | set(LEAN_LABELS.values())
 ALLOWED = BOT_OWNED | set(TYPE_LABELS.values()) | {"google-tv"}
 
 # PRs that change the bot, CI or review config are never judged by the bot
@@ -152,9 +154,9 @@ def repo_context(gh: GitHub, branch: str) -> dict:
             "examples_readme": gh.file_text("examples/README.md", branch) or ""}
 
 
-def conflicts_with_main(gh: GitHub, snap: dict, ptype: str) -> bool | None:
-    """From GitHub's mergeable flag (computed in the background, so it is retried once). A list or showcase PR
-    whose only conflict can be README table rows is not blocked: those are resolved mechanically on merge."""
+def conflicts_with_main(gh: GitHub, snap: dict, ptype: str = "") -> bool | None:
+    """From GitHub's mergeable flag (computed in the background, so it is retried once). Any conflict counts:
+    the rule is a rebase ask, whatever the files (approved 22 Oct)."""
     m = snap.get("mergeable")
     if m is None and not getattr(gh, "dry_run", True):
         time.sleep(3)
@@ -164,12 +166,64 @@ def conflicts_with_main(gh: GitHub, snap: dict, ptype: str) -> bool | None:
             m = None
     if m is None:
         return None
-    if m:
-        return False
-    if ptype in ("tv-list", "showcase") and all(
-            f["path"] in v4.TABLE_FILES or f["path"].startswith("examples/") for f in snap["files"]):
-        return False
-    return True
+    return not m
+
+
+def conflict_files(gh: GitHub, snap: dict) -> list[str]:
+    """The files both the PR and main changed since they parted: where the conflicts are (from two compares;
+    nothing is checked out)."""
+    try:
+        cmp = gh.get(f"/compare/{snap['default_branch']}...{snap['head_sha']}") or {}
+        base = (cmp.get("merge_base_commit") or {}).get("sha")
+        if not base:
+            return []
+        main = gh.get(f"/compare/{base}...{snap['default_branch']}") or {}
+    except requests.RequestException:
+        return []
+    theirs = {f["filename"] for f in main.get("files") or []}
+    return sorted(f["path"] for f in snap["files"] if f["path"] in theirs)
+
+
+def duplicate_context(gh: GitHub, snap: dict, max_fetch: int = 8) -> dict:
+    """Earlier open PRs, PRs merged in the last 7 days and main's last 7 days that may already do what this
+    PR does."""
+    me = {"pr": snap["pr"], "title": snap["title"], "body": snap.get("body", ""), "created_at": snap["created_at"],
+          "files": [f["path"] for f in snap["files"]], "file_patches": snap["files"]}
+    refs, words = facts_mod.issue_refs(me), facts_mod.title_words(snap["title"])
+    since = datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    others = []
+    try:
+        listed = [(p, False) for p in gh.paged("/pulls", limit=300, state="open")]
+        listed += [(p, True) for p in gh.paged("/pulls", limit=100, state="closed", sort="updated", direction="desc")
+                   if p.get("merged_at") and p["merged_at"] >= since]
+        for p, merged in listed:
+            if p["number"] == snap["pr"] or (not merged and p["created_at"] >= snap["created_at"]):
+                continue
+            o = {"pr": p["number"], "title": p["title"], "body": p.get("body") or "", "created_at": p["created_at"],
+                 "merged": merged, "head": (p.get("head") or {}).get("sha", "")}
+            ow = facts_mod.title_words(o["title"])
+            jacc = len(words & ow) / len(words | ow) if words and ow else 0
+            if (refs & facts_mod.issue_refs(o)) or jacc >= 0.3:
+                others.append(o)
+        others = others[:max_fetch]
+        for o in others:
+            files = gh.paged(f"/pulls/{o['pr']}/files", limit=100)
+            o["files"] = [f["filename"] for f in files]
+            o["added"] = facts_mod.added_lines_of([{"path": f["filename"], "patch": f.get("patch") or ""}
+                                                   for f in files])
+            if o["head"]:  # stacked on it: its commits are part of this PR
+                st = (gh.get(f"/compare/{o['head']}...{snap['head_sha']}") or {}).get("status")
+                o["contained"] = st in ("ahead", "identical")
+        commits, texts = [], {}
+        for path in [p for p in me["files"] if facts_mod._meaningful(p)][:5]:
+            q = requests.utils.quote(path, safe="")
+            for c in gh.get(f"/commits?sha={snap['default_branch']}&path={q}&since={since}&per_page=20") or []:
+                commits.append({"sha": c["sha"], "message": c["commit"]["message"], "files": [path]})
+            texts[path] = gh.file_text(path, snap["default_branch"])
+    except requests.RequestException:
+        return {}
+    return facts_mod.duplicate_facts(me, [o for o in others if "files" in o], recent_commits=commits,
+                                     main_texts=texts)
 
 
 def ci_facts(gh: GitHub, sha: str, *, ignore: tuple[str, ...] = ("review",), apk_artifact: str = "") -> dict:
@@ -344,8 +398,19 @@ def checks(fx: dict, ptype: str) -> list[str]:
                        + ", ".join(f"`{x.rsplit('/', 1)[-1]}`" for x in fx["home_path_touched"][:3]))
         if fx.get("apk_bytes"):
             out.append(f"APK: {fx['apk_bytes']:,} B" + (f" (gate {fx['apk_gate_bytes']:,} B)" if fx.get("apk_gate_bytes") else ""))
+    if fx.get("core_packages_disabled"):
+        out.append(f"**{note}**: disables Android core packages (#884): `{'`, `'.join(fx['core_packages_disabled'][:4])}`")
     if fx.get("conflicts_with_main"):
-        out.append(f"**{note}**: conflicts with main")
+        files = fx.get("conflict_files") or []
+        out.append(f"**{note}**: conflicts with main" + (": `" + "`, `".join(files[:5]) + "`" if files else ""))
+    for d in (fx.get("possible_duplicates") or [])[:3]:
+        out.append(f"**{note}**: {'likely duplicate of' if d.get('strong') else 'may overlap'} #{d['pr']} ({_clean(d['why'], 140)})")
+    if (fx.get("already_on_main_live") or {}).get("share", 0) >= 0.9:
+        out.append(f"**{note}**: what it adds is already on main")
+    ev = fx.get("evidence") or {}
+    if ev:
+        out.append("Found in the diff: " + "; ".join(f"{k.replace('_', ' ')}: `{_clean(v, 100)}`"
+                                                      for k, v in list(ev.items())[:3]))
     if fx.get("ci_failed"):
         out.append(f"**{note}**: CI fails: {', '.join(fx['ci_failed'][:3])}")
     if fx.get("theme_missing_screenshot"):
@@ -366,11 +431,13 @@ def checks(fx: dict, ptype: str) -> list[str]:
 
 
 def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reason: str, fix: str, why_held: str,
-           fx: dict, ptype: str, cost: float, elsewhere: str = "", data: dict | None = None, note: str = "") -> str:
+           fx: dict, ptype: str, cost: float, elsewhere: str = "", data: dict | None = None, note: str = "",
+           leaning: tuple[str, float] | None = None) -> str:
     head = snap["head_sha"][:12]
     lines = [f"{MARKER} sha={head} v=2 -->"]
     if verdict == "hold":
-        lines.append(f"**maintainer-bot review** · this one needs **a maintainer decision**")
+        lean_txt = f" · Leans: {leaning[0]} ({leaning[1]:.0%})" if leaning else ""
+        lines.append(f"**maintainer-bot review** · this one needs **a maintainer decision**{lean_txt}")
         lines.append("")
         lines.append(_opening(reason))
         lines.append("")
@@ -389,6 +456,10 @@ def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reaso
             lines += ["", f"**The small fix:** {_clean(fix, 500)}"]
         elif verdict == "rework" and fix:
             lines += ["", f"**What would help:** {_clean(fix, 400)}"]
+    weak = [d for d in fx.get("possible_duplicates") or [] if not d.get("strong")]
+    if weak and verdict != "hold":
+        lines += ["", "Possibly related: " + "; ".join(f"#{d['pr']} ({_clean(d['why'], 120)})" for d in weak[:3])
+                  + ". Worth a look before merging both."]
     if note:
         lines += ["", f"_{_clean(note, 200)}_"]
     lines += ["", "<details><summary>Checks</summary>", ""]
@@ -411,7 +482,16 @@ def render_skip(snap: dict, paths: list[str]) -> str:
         "", FOOTER])
 
 
-def labels_for(ptype: str, verdict: str, priority: str, fx: dict, snap: dict) -> list[str]:
+def render_unreviewed(snap: dict, fx: dict, ptype: str) -> str:
+    return "\n".join([f"{MARKER} sha={snap['head_sha'][:12]} v=2 -->",
+                      "**maintainer-bot review** · this one needs **a maintainer decision**", "",
+                      "Thanks for the PR! Couldn't review this one automatically; it goes to the maintainer.", "",
+                      "<details><summary>Checks</summary>", ""] + [f"- {c}" for c in checks(fx, ptype)] +
+                     ["", "</details>", "", FOOTER])
+
+
+def labels_for(ptype: str, verdict: str, priority: str, fx: dict, snap: dict,
+               lean: tuple[str, float] | None = None) -> list[str]:
     out = set()
     if ptype in TYPE_LABELS:
         out.add(TYPE_LABELS[ptype])
@@ -419,6 +499,8 @@ def labels_for(ptype: str, verdict: str, priority: str, fx: dict, snap: dict) ->
     if re.search(r"google.?tv|setupwraith|launcherx", text):
         out.add("google-tv")
     out.add(VERDICT_LABELS.get(verdict, "needs-maintainer"))
+    if verdict == "hold" and lean and lean[0] in LEAN_LABELS:
+        out.add(LEAN_LABELS[lean[0]])
     if priority in PRIORITY_LABELS:
         out.add(priority)
     return sorted(out & ALLOWED)
@@ -496,6 +578,9 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
                               conflicts_with_main=conflicts_with_main(gh, snap, ptype),
                               ci_failed=extra.get("ci_failed"), apk_bytes=extra.get("apk_bytes"),
                               apk_gate_bytes=extra.get("apk_gate_bytes"))
+    if fx.get("conflicts_with_main"):
+        fx["conflict_files"] = conflict_files(gh, snap)
+    fx.update(duplicate_context(gh, snap))
     dh = diff_hash(snap)
 
     # re-review without a model call: same changes as last time, or only Markdown on a code/list PR
@@ -538,6 +623,13 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
                            second_model=second, ledger=L, system_extra=LIVE_SYSTEM)
         except BudgetExceeded as e:
             return {**result, "skipped": str(e)}
+        except ToolCallFailed as e:
+            # a refusal or no answer (#753, #830): never leave the PR silent
+            body = render_unreviewed(snap, fx, ptype)
+            _post(gh, n, sticky_id, body)
+            add, rem = sync_labels(gh, n, snap["labels"], labels_for(ptype, "hold", "", fx, snap))
+            return {**result, "type": ptype, "verdict": "hold", "unreviewed": str(e)[:160], "comment": body,
+                    "labels_added": add, "labels_removed": rem, "cost_usd": round(L.spent - start, 4)}
         cost = L.spent - start
 
     verdict, why, policy_fix = v4.final(res, fx, policy)
@@ -551,8 +643,11 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
         spec = templates._specific(res.get("specific", ""))
         reason = f"Thank you for this, {spec}!" if spec else "Thanks for the PR!"
     fix = res.get("fix", "") if verdict in ("merge-with-fix", "rework") and res["verdict"] == verdict else ""
-    if verdict == "rework" and res["verdict"] != "rework" and why:
-        fix = why  # a deterministic rule turned the verdict into a rework: that rule is the ask
+    if verdict == "rework" and why:
+        # a deterministic rule made it a rework (rebase, core packages, …): that rule is the ask, with the
+        # model's own ask after it when it also wanted changes
+        own = res.get("fix", "") if res["verdict"] == "rework" else ""
+        fix = why + (f". Also: {own}" if own and own.strip() not in why else "")
     if verdict == "merge-with-fix" and policy_fix:
         fix = "; ".join(x for x in (fix, policy_fix) if x)
     elsewhere = ""
@@ -564,9 +659,12 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
             "diff": dh, "p": priority, "reason": _clean(res.get("comment") or reason, 400),
             "fix": _clean(res.get("fix", ""), 300),
             "specific": _clean(res.get("specific", ""), 140), "final": verdict}
+    leaning = v4.lean(res) if verdict == "hold" else None
+    data["lean"] = leaning[0] if leaning else None
     body = render(snap, verdict=verdict, model_verdict=res["verdict"], priority=priority, reason=reason,
-                  fix=fix, why_held=why, fx=fx, ptype=ptype, cost=cost, elsewhere=elsewhere, data=data, note=note)
-    labels = labels_for(ptype, verdict, priority if verdict != "hold" else "", fx, snap)
+                  fix=fix, why_held=why, fx=fx, ptype=ptype, cost=cost, elsewhere=elsewhere, data=data, note=note,
+                  leaning=leaning)
+    labels = labels_for(ptype, verdict, priority if verdict != "hold" else "", fx, snap, lean=leaning)
     _post(gh, n, sticky_id, body)
     add, rem = sync_labels(gh, n, snap["labels"], labels)
     return {**result, "type": ptype, "verdict": verdict, "model_verdict": res["verdict"], "why_held": why,
