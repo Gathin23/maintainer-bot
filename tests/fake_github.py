@@ -10,14 +10,13 @@ import os
 import subprocess
 import tempfile
 
-from maintainer_bot.live import MARKER
+from maintainer_bot.live import MARKER, VERDICT_WORDS, write_data
 
 
 def sticky_body(sha: str, verdict: str, *, reason="Thanks for the PR! Clean list, every package checked.",
-                fix="", ask="", question="", priority="p2") -> str:
-    words = {"merge": "merge", "merge-with-fix": "merge with a small fix", "rework": "a few changes first",
-             "close": "close (kindly)"}
-    lines = [f"{MARKER} sha={sha[:12]} v=1 -->"]
+                fix="", ask="", question="", priority="p2", version=1, data=None) -> str:
+    words = VERDICT_WORDS
+    lines = [f"{MARKER} sha={sha[:12]} v={version} -->"]
     if verdict == "hold":
         lines += ["**maintainer-bot review** · this one needs **a maintainer decision**", "", reason, "",
                   f"Why it goes to a maintainer: {question or 'launcher code'}."]
@@ -29,11 +28,14 @@ def sticky_body(sha: str, verdict: str, *, reason="Thanks for the PR! Clean list
             lines += ["", f"**What would help:** {ask}"]
     lines += ["", "<details><summary>Checks</summary>", "", "- **OK**: fine", "", "</details>", "",
               "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai)</sub>"]
+    if data:
+        lines.append(write_data(data))
     return "\n".join(lines)
 
 
 VERDICT_LABEL = {"merge": "bot-suggests:merge", "merge-with-fix": "bot-suggests:merge-with-fix",
-                 "rework": "bot-suggests:rework", "close": "bot-suggests:close", "hold": "needs-maintainer"}
+                 "rework": "bot-suggests:rework", "close": "bot-suggests:close", "showcase": "bot-suggests:showcase",
+                 "addon": "bot-suggests:addon", "theme": "bot-suggests:theme", "hold": "needs-maintainer"}
 
 
 class FakeApi:

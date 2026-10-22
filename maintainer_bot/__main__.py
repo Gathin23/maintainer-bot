@@ -7,6 +7,7 @@
     python -m maintainer_bot approve   --results runs/MODEL/results.jsonl --comment "/approve except #512"
     python -m maintainer_bot review    --repo OWNER/NAME --pr 123 [--dry-run] [--force]
     python -m maintainer_bot backfill  --repo OWNER/NAME [--dry-run]
+    python -m maintainer_bot refresh   --repo OWNER/NAME --event $GITHUB_EVENT_PATH   (after CI: facts only, no model)
 
 Phase 2 (acts only on a maintainer's /approve; see docs/phase2.md):
     python -m maintainer_bot queue-issue     --repo OWNER/NAME [--allow USERS] [--dry-run]
@@ -58,11 +59,13 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--results", required=True)
     a.add_argument("--prs", default="")
     a.add_argument("--comment", required=True)
-    for name in ("review", "backfill"):
+    for name in ("review", "backfill", "refresh"):
         r = sub.add_parser(name)
         r.add_argument("--repo", required=True)
         if name == "review":
             r.add_argument("--pr", type=int, required=True)
+        if name == "refresh":
+            r.add_argument("--event", required=True, help="the workflow_run event JSON ($GITHUB_EVENT_PATH)")
         r.add_argument("--dry-run", action="store_true", help="print the comment and labels, write nothing")
         r.add_argument("--force", action="store_true", help="review again even if this commit was reviewed")
         r.add_argument("--rules", help="local MAINTAINER.md (default: read from the repo's default branch)")
@@ -72,6 +75,9 @@ def main(argv: list[str] | None = None) -> None:
         r.add_argument("--per-pr-cap", type=float, default=float(os.environ.get("MB_PER_PR_CAP", "0.5")))
         r.add_argument("--model", default=os.environ.get("MB_MODEL", "claude-opus-5.5"))
         r.add_argument("--second-model", default=os.environ.get("MB_SECOND_MODEL", "glm-5.3-flash"))
+        r.add_argument("--critic-model", default=os.environ.get("MB_CRITIC_MODEL", "claude-sonnet-5"))
+        r.add_argument("--apk-artifact", default=os.environ.get("MB_APK_ARTIFACT", ""),
+                       help="name of a CI artifact holding the launcher APK size (optional APK-size fact)")
         r.add_argument("--json", action="store_true", help="print the result as JSON")
     qi = sub.add_parser("queue-issue")
     qi.add_argument("--repo", required=True)
@@ -107,11 +113,12 @@ def main(argv: list[str] | None = None) -> None:
                                      out=args.out))
         return
 
-    if args.cmd in ("review", "backfill"):
+    if args.cmd in ("review", "backfill", "refresh"):
         kw = dict(rules_md=open(args.rules, encoding="utf-8").read() if args.rules else None,
                   precedents=open(args.precedents, encoding="utf-8").read() if args.precedents else None,
                   dry_run=args.dry_run, force=args.force, ledger_path=args.ledger, daily_cap=args.daily_cap,
-                  per_pr_cap=args.per_pr_cap, model=args.model, critic=args.model, second=args.second_model)
+                  per_pr_cap=args.per_pr_cap, model=args.model, critic=args.critic_model, second=args.second_model,
+                  apk_artifact=args.apk_artifact)
         if args.cmd == "review":
             r = live.review(args.repo, args.pr, **kw)
             if args.json:
@@ -120,6 +127,9 @@ def main(argv: list[str] | None = None) -> None:
                 print({k: v for k, v in r.items() if k != "comment"})
                 if r.get("comment"):
                     print("\n" + r["comment"])
+        elif args.cmd == "refresh":
+            for r in live.refresh_after_ci(args.repo, args.event, **kw):
+                print(json.dumps({k: v for k, v in r.items() if k != "comment"}))
         else:
             live.backfill(args.repo, **kw)
         return

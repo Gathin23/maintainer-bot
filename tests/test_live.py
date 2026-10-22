@@ -102,6 +102,82 @@ class LiveTest(unittest.TestCase):
                          ["bot-suggests:merge-with-fix", "google-tv", "p2", "tv-list"])
         self.assertEqual(live.labels_for("workflow", "hold", "", fx, s), ["google-tv", "needs-maintainer"])
 
+    def _ctx(self):
+        orig = live.repo_context
+        live.repo_context = lambda gh, b: {"list_folders": set(), "locale_count": 0, "locales": [],
+                                           "themes": set(), "addons": set(), "examples_readme": ""}
+        self.addCleanup(lambda: setattr(live, "repo_context", orig))
+        judge = live.v4.judge
+
+        def no_model(*a, **k):
+            raise AssertionError("a re-review with the same changes must not call a model")
+        live.v4.judge = no_model
+        self.addCleanup(lambda: setattr(live.v4, "judge", judge))
+
+    def test_rereview_same_changes_without_a_model(self):
+        self._ctx()
+        s = snap(["examples/acme/debloat.txt"], head="1234567890abcdef")
+        data = live.write_data({"m": "merge", "c": 0.9, "crit": 0, "sec": "merge", "diff": live.diff_hash(s),
+                                "p": "p2", "reason": "Thanks! Clean list.", "fix": "", "specific": "", "final": "merge"})
+        sticky = "<!-- maintainer-bot sha=abcdef123456 v=2 -->\nold\n" + data
+        r, fake = self._run(s, sticky=sticky)
+        self.assertTrue(r["re_review"])
+        self.assertEqual(r["cost_usd"], 0)
+        self.assertEqual(r["verdict"], "merge")
+        self.assertIn("sha=1234567890ab", r["comment"])
+        self.assertIn("same as at the last review", r["comment"])
+        self.assertTrue(any(w[0] == "PATCH" for w in fake.writes))  # the sticky is edited in place
+
+    def test_rereview_policy_runs_again_on_fresh_facts(self):
+        self._ctx()
+        old = snap(["examples/acme/debloat.txt"])
+        s = snap(["examples/acme/debloat.txt"], head="1234567890abcdef", patch="+com.acme.ads\n")
+        s["files"][0]["path"] = "examples/acme/debloat.txt"
+        data = live.write_data({"m": "merge", "c": 0.9, "crit": 0, "sec": "merge", "diff": live.diff_hash(old),
+                                "p": "p2", "reason": "Thanks!", "fix": "", "specific": "", "final": "merge"})
+        # the same changes, but main now has the folder: the policy holds the merge as an edit of a list on main
+        orig = live.repo_context
+        live.repo_context = lambda gh, b: {"list_folders": {"acme"}, "locales": [], "themes": set(), "addons": set(),
+                                           "examples_readme": ""}
+        try:
+            r, fake = self._run(s, sticky="<!-- maintainer-bot sha=abcdef123456 v=2 -->\n" + data)
+        finally:
+            live.repo_context = orig
+        self.assertTrue(r["re_review"])
+        self.assertEqual(r["verdict"], "merge")  # 0.9 >= 0.85: still decided
+        self.assertIn("edits a list already on main", r["comment"])
+
+    def test_refresh_after_ci_reads_failures_without_a_model(self):
+        self._ctx()
+        s = snap(["launcher/app/src/main/res/values/config.xml"], head="abcdef1234567890",
+                 patch='+    <bool name="dock_glass">false</bool>\n')
+        data = live.write_data({"m": "merge", "c": 0.9, "crit": 0, "sec": "merge", "diff": live.diff_hash(s),
+                                "p": "p2", "reason": "Thanks!", "fix": "", "specific": "", "final": "merge"})
+        orig = live.ci_facts
+        live.ci_facts = lambda gh, sha, **kw: {"ci_failed": ["Launcher build and unit tests"]}
+        try:
+            r, fake = self._run(s, sticky="<!-- maintainer-bot sha=abcdef123456 v=2 -->\n" + data, refresh=True)
+        finally:
+            live.ci_facts = orig
+        self.assertEqual(r["verdict"], "rework")
+        self.assertIn("CI fails", r["comment"])
+        self.assertIn("after CI finished", r["comment"])
+        r2, _ = self._run(s, sticky="<!-- maintainer-bot sha=abcdef123456 v=1 -->", refresh=True)
+        self.assertIn("no stored review", r2["skipped"])
+
+    def test_render_showcase_uses_the_template(self):
+        s = snap(["launcher/app/src/main/java/com/gathin/tvhome/Weather.java"], title="launcher: weather card")
+        fx = facts.compute_v4(s)
+        body = live.render(s, verdict="showcase", model_verdict="showcase", priority="p3", reason="", fix="",
+                           why_held="", fx=fx, ptype="launcher", cost=0.0,
+                           elsewhere=live.templates.render("showcase", specific="the weather card",
+                                                           link=live.templates.where_link("o/r")),
+                           data={"m": "showcase"})
+        self.assertIn("suggests **your own fork, with a row in SHOWCASE.md**", body)
+        self.assertIn("where-does-my-idea-go", body)
+        self.assertIn("<!-- mb-review ", body)
+        self.assertEqual(live.labels_for("launcher", "showcase", "p3", fx, s), ["bot-suggests:showcase", "launcher", "p3"])
+
     def test_clean_strips_html_and_length(self):
         t = live._clean("<script>x</script>" + "word " * 300, limit=50)
         self.assertNotIn("<", t)

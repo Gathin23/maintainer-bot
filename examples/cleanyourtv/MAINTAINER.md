@@ -1,66 +1,97 @@
 # How CleanYourTV PRs are reviewed
 
 CleanYourTV (Gathin23/cleanyourtv) is a prompt plus tools that debloat Android TV / Google TV / Fire TV over
-ADB and a tiny native launcher (`launcher/`, plain Java, ~430 KB, for 1 GB TVs). Contributors mostly add
-tested TV lists under `examples/<tv>/`, translations, docs, small launcher options and tools.
+ADB and a tiny native launcher (`launcher/`, plain Java, ~445 KB, for 1 GB TVs). Contributors mostly add
+tested TV lists under `examples/<tv>/`, translations, docs, small launcher options, themes, add-ons and tools.
+
+## The policy: a small core plus a well-indexed hub
+The main repo stays small and simple: the prompt, tested TV lists, the safety rules and a small, stable
+launcher under the APK size gate (`.github/workflows/ci.yml`, currently 471,040 B). Bigger ideas live next to
+it, and every one of them gets a home. Pick the smallest home that fits (CONTRIBUTING, "Where does my idea go?"):
+
+| The idea | Where it goes | Verdict |
+|---|---|---|
+| A TV model, a fix, a translation, docs, a tool fix | merged here | merge / merge-with-fix |
+| A small launcher switch: **off by default**, strings in **every** locale (or config-only), small | merged here | merge / merge-with-fix |
+| A new look (colours, wallpaper, dock style) that existing config keys can carry | `themes/<name>/` with a real-TV screenshot | theme |
+| A feature that can be its own small app (card, widget, screensaver, stats) | `addons/<name>/`, a module card that never touches `launcher/` | addon |
+| A big in-launcher rewrite, new permissions or network access, an old-Android port (lower minSdk), Fire TV Home takeover, an alternative launcher, a change of the default for every TV | the contributor's fork plus one row in SHOWCASE.md | showcase |
+| Safety rules or PROMPT.md, CI/workflows, the APK gate, protected packages | the maintainer | hold |
+
+- showcase, addon and theme are kind closes (or, for theme, a move): thank the author for something specific,
+  say where it fits and why the core stays small. They are not a judgement of the work. Never rework a big
+  feature into a small one; offer the showcase row instead.
+- The core takes a switch only if it changes nothing until a theme or config.xml turns it on, has its strings in
+  every locale (or no settings row), and fits the size budget (a few hundred bytes to ~1 KB; the gate is hard).
+  A changed default for every TV is a rework (put the new value in a theme or that TV's example config).
+- Launcher bug fixes that correct wrong behaviour need no flag; tested on a device, they can merge.
+- Changes to the Home/launch path (Home key, boot, return to Home, the install scripts) usually need a run on a
+  real TV: hold unless the author ran it on a TV and the change is small.
 
 ## Verdicts
 - **merge**: correct, in scope, tested where it matters, nothing to change.
-- **merge-with-fix**: right idea, a small mechanical change makes it mergeable (resolve a conflict with
-  another PR, add the missing README/examples table row, keep both options, move a note, fix a count,
-  a string missing in one locale). Say exactly what to change in `fix`.
-- **rework**: worth having but the author must change something real (missing strings in most locales,
-  overlaps another PR, wrong scope of a default, needs a device report, unsafe list entry). One clear ask.
-- **close**: duplicate of something already merged, superseded, out of scope, or harmful. Be kind; for a
-  completely different or heavily modified launcher, suggest a SHOWCASE entry instead.
-- **hold**: a maintainer decision is needed (scope or taste call, safety rule change, prebuilt binaries,
-  very large features), or it must first be run on a real TV.
+- **merge-with-fix**: a small mechanical change makes it mergeable (add the README/examples row, a string missing
+  in one or two locales, drop a stray file, comment out an untested entry, trim a SHOWCASE cell to one line).
+  Say exactly what to change in `fix`.
+- **rework**: worth having but the author must change something real. One clear ask.
+- **close**: duplicate, superseded, out of scope or against the base rules. Be kind; point at what landed.
+- **showcase / addon / theme**: see the table above.
+- **hold**: a maintainer decision is needed (scope or taste call, safety rule change, prebuilt binaries), or it
+  must first run on a real TV.
+
+## Lists
+- Lists **disable, never uninstall**. Never disable what the TV needs: TV/input/tuner services, the input menu,
+  remote and Bluetooth pairing, the keyboard, Play Store and Play Services. Disabling
+  `com.google.android.tungsten.setupwraith` is normal on Google TV lists (it gives Home back but costs casting;
+  the list header should say so). Factory/AT packages may be disabled, never launched.
+- `pm uninstall` steps in a list folder → **rework**: keep the folder to disabling only.
+- A Private DNS / AdGuard setup inside a list folder is dropped on merge (the main README already has the
+  optional DNS extra); a note that "Private DNS works on this set" is fine.
+- The folder's own install/restore scripts are dropped on merge: the README points at `tools/disable.sh` and
+  `tools/restore.sh`.
+- Entries the author marks untested are commented out on merge until tested. The TV's own firmware updater is
+  better kept enabled; if a list disables it, the header must say why.
+- Same product code and firmware as a folder already on main: a second unit or a re-badged set of the same model
+  (another region's variant, a different badge) → **rework**: fold the notes into that folder. A different model
+  number whose list makes its own choices can be its own folder even on the same board and firmware (TCL C89B
+  #653, Q7C #735 and G08 EU #657 were all merged as their own folders next to the 85RM7L list). It is a judgement
+  call: set confidence accordingly.
+- Edits to a list already on main (second units, notes, corrections) are judgement calls; decide only when the
+  change is clearly right.
+- A new list needs its row in README and examples/README (missing → merge-with-fix: add the rows).
+- `pm hide`/`pm block` needs the matching unhide/unblock undo in the header.
 
 ## Scope and taste
 - The launcher stays small, offline and fast: no INTERNET permission, no network features (self-update,
-  crypto, weather APIs were refused), no heavy libraries, no prebuilt binaries in the repo.
-- New launcher behaviour goes behind a config flag, **off by default**, with strings in every locale.
-  Changing a default for every TV is a rework (put it in that TV's example config instead).
-- Lists **disable, never uninstall**. Never disable what the TV needs: TV/input/tuner services, the input
-  menu, remote and Bluetooth pairing, the keyboard, Play Store and Play Services. Disabling
-  `com.google.android.tungsten.setupwraith` is normal on Google TV lists (it gives Home back but costs
-  casting; the list header should say so) — that alone is not a reason to rework. Factory/AT packages may
-  be disabled, never launched.
+  crypto, weather APIs were refused), no heavy libraries, no prebuilt binaries in the repo (not even as CI
+  artifacts).
 - Changes to the safety rules in PROMPT.md, the Home-safety logic in the scripts, the China TCL rule,
   CI/workflows or the APK size gate need the maintainer: **hold**.
 - Duplicates: the same TV model/folder already merged or in another open PR → close or fold into it.
-- One design per feature: if two PRs do the same thing, keep one (merge or rework the other).
-- Very large add-ons (thousands of lines, APIs for external apps) → hold; completely different
-  launchers → close with a showcase invite.
-- A PR that bundles several unrelated features, or whose idea has since landed another way, is closed
-  kindly (thank them, point at what landed, invite a smaller PR) rather than sent back for rework.
-- A list PR is judged on its own folder: a big omnibus PR touching many folders is not a competing list.
+- One design per feature: if two PRs do the same thing, keep one (merge or rework the other into it).
+- A PR that bundles several good, separable parts gets **rework**: split it (list each part). A device's list plus
+  small fixes for that same device can be one PR. A list bundled inside a launcher feature PR goes as its own PR.
+- A PR that conflicts with main in code (not just README table rows) gets a kind rebase request (**rework**).
+- Files nothing links to (screenshots, stray root files, unrelated build changes) are dropped on merge.
+- Press and coverage rows need a source that could be opened and checked; leave out what can't be verified.
 - Docs and README must stay in step: a new list needs its row in README and examples/README.
-- Launcher behaviour that changes what users see usually needs a TV run before merge → hold if untested.
 
 ## Comment style
-Short, human, thankful. Name what changed on merge. Rework asks are one line. Closes are kind.
+Short, human, thankful: name one specific thing that is good about the PR. Name what changes on merge. Rework
+asks are one line. Closes are kind and say where the idea can live instead. Never mention who or what wrote the
+review.
 
-## Learned from past decisions (rule mining on rounds before 21 Oct, reviewed)
-- A PR that bundles several good, separable parts gets **rework** with one ask: split it into separate PRs
-  (list each part and what it needs). Close a bundle only when its idea has already landed another way or it
-  has fallen far behind main. A device's list plus small fixes for that same device can be one PR.
-- Contributor PRs whose main content is a new CI workflow that builds or publishes releases (for example a
-  "latest" APK on every push), especially without a description or bundled with other changes: **close**
-  kindly. Hold is for workflow changes that are clearly argued and could plausibly be adopted.
-- Launcher bug fixes that correct wrong behaviour (focus or highlight glitches, the wrong tuner or activity
-  opened) need no config flag and no new TV-run hold when the author tested on a device; the TV-run hold is
-  for new visible features. A good feature with a small performance issue can be merge-with-fix.
-- Anything against the base rule ("no root, nothing uninstalled, you build it yourself") is **closed**
-  kindly, even if it is only docs or a showcase row: root exploits, getting around app-store protection,
-  private or modified builds others can't reproduce from this repo, and extras added to the PROMPT flow
-  beyond debloating (system-wide DNS or ad blocking). Point to a public, reproducible version if there is one.
+## Learned from past decisions (reviewed)
+- Anything against the base rule ("no root, nothing uninstalled, you build it yourself") is **closed** kindly,
+  even if it is only docs or a showcase row: root exploits, getting around app-store protection, private or
+  modified builds others can't reproduce from this repo, and extras added to the PROMPT flow beyond debloating
+  (system-wide DNS or ad blocking). Point to a public, reproducible version if there is one.
   (Prebuilt APKs committed to this repo stay **hold**: the maintainer decides.)
-- Check "off by default" in the diff, not the description: the flag exists in config.xml, the theme JSON and
-  the themes/README table, and with the flag off nothing new runs (no receivers, no writes, no permission
-  grants in the install script). If something runs while the flag is off → **rework**.
+- Check "off by default" in the diff, not the description: the key exists in config.xml, the theme JSON and the
+  themes/README table, and with it off nothing new runs (no receivers, no writes, no permission grants in the
+  install script). If something runs while it is off → **rework**.
 - When two open PRs build the same helper or fix, pick one as its home and ask the other author to fold their
   part in (rework, not hold). If another PR already fixes the same thing more completely, close the narrower one.
-- A launcher change that is a different design or taste for everyone (for example its own sounds replacing the
-  system click), while the author is still deciding on an opt-in version → **hold**, and add the author's
-  branch to SHOWCASE.md meanwhile.
+- Contributor PRs whose main content is a new CI workflow that builds or publishes releases: **close** kindly.
+- A launcher PR that adds the INTERNET permission or network access → **showcase**; if it carries a TV list, ask
+  for the list as its own PR in the same comment.

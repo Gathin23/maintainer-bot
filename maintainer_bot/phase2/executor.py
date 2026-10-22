@@ -16,7 +16,9 @@ from . import fixer, messages, queue as queue_mod, sticky
 from .commands import Commands
 from .gitops import Git, GitError
 
-NEVER_MERGE_LABELS = ("needs-maintainer", "launcher", queue_mod.HOLD_LABEL)
+NEVER_MERGE_LABELS = ("needs-maintainer", queue_mod.HOLD_LABEL)
+# a v1 review sent every launcher PR to the maintainer; a v2 review passed the launcher gate, so only v1 blocks
+V1_ONLY_LABELS = ("launcher",)
 NEVER_MERGE_PATHS = SKIP_PATHS + (".github/maintainer/",)
 REWORK_LABEL = queue_mod.REWORK_LABEL
 
@@ -37,6 +39,7 @@ class Config:
     poll: float = 30
     sleep: Callable[[float], None] = time.sleep
     ignore_checks: tuple[str, ...] = ("review",)
+    where_link: str = ""                      # the repo's "Where does my idea go?" table, for showcase/addon/theme
     max_fix_lines: int = fixer.MAX_CHANGED_LINES
     dry_run: bool = False                     # decide everything, write nothing (the read-only report)
     log: Callable[[str], None] = print
@@ -53,7 +56,7 @@ class Outcome:
 
 
 def order(plan: dict[int, dict], items: dict[int, dict]) -> list[int]:
-    rank = {"close": 0, "rework": 1, "merge": 2, "merge-with-fix": 3}
+    rank = {"close": 0, "showcase": 0, "addon": 0, "rework": 1, "theme": 1, "merge": 2, "merge-with-fix": 3}
     return sorted(plan, key=lambda n: (rank[plan[n]["action"]],
                                        queue_mod.PRIO.get(items.get(n, {}).get("priority", ""), 4), n))
 
@@ -127,7 +130,7 @@ class Executor:
             return Outcome(n, action, "skipped", "the review changed since the queue was built")
         if step["source"] == "approve" and queue_mod.HOLD_LABEL in pr["labels"]:
             return Outcome(n, action, "skipped", "labelled on-hold")
-        if step["source"] == "approve" and action == "rework" and REWORK_LABEL in pr["labels"]:
+        if step["source"] == "approve" and action in ("rework", "theme") and REWORK_LABEL in pr["labels"]:
             return Outcome(n, action, "skipped", "changes were already asked")
         if step["source"] == "approve" and review["verdict"] != item["verdict"]:
             return Outcome(n, action, "skipped", f"the suggestion is now {review['verdict']}, not {item['verdict']}")
@@ -137,7 +140,22 @@ class Executor:
             return self.close(n, text)
         if action == "rework":
             return self.rework(n, text)
+        if action in ("showcase", "addon", "theme"):
+            return self.elsewhere(n, action, review)
         return self.merge(n, pr, action, review)
+
+    def elsewhere(self, n: int, kind: str, review: dict) -> Outcome:
+        what = {"showcase": "close with a SHOWCASE offer", "addon": "close with an add-on invite",
+                "theme": f"ask to move it to themes/ and label {REWORK_LABEL}"}[kind]
+        if self.cfg.dry_run:
+            return Outcome(n, kind, "would", what)
+        self.api.comment(n, messages.elsewhere(n, kind, specific=review.get("specific", ""),
+                                               name=review.get("name", ""), link=self.cfg.where_link))
+        if kind == "theme":
+            self.api.add_labels(n, [REWORK_LABEL])
+            return Outcome(n, kind, "done", "asked to move it to themes/")
+        self.api.close_pr(n)
+        return Outcome(n, kind, "done", "closed, " + ("SHOWCASE offered" if kind == "showcase" else "add-on invited"))
 
     def close(self, n: int, reason: str) -> Outcome:
         if self.cfg.dry_run:
@@ -154,7 +172,7 @@ class Executor:
         return Outcome(n, "rework", "done", "asked for changes")
 
     def merge(self, n: int, pr: dict, action: str, review: dict) -> Outcome:
-        bad = [l for l in pr["labels"] if l in NEVER_MERGE_LABELS]
+        bad = [l for l in pr["labels"] if l in NEVER_MERGE_LABELS or (l in V1_ONLY_LABELS and review.get("v", 1) < 2)]
         if bad:
             return Outcome(n, action, "skipped", f"labelled {', '.join(bad)}: maintainer only")
         paths = self.api.pr_paths(n)

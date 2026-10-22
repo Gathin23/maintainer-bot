@@ -17,7 +17,9 @@ DATA_MARK = "<!-- mb-queue "
 TITLE = "Today's queue {date}"
 MAX_BODY = 60000
 SECTIONS = [("merge", "Merge"), ("merge-with-fix", "Merge with a small fix"), ("rework", "A few changes first"),
-            ("close", "Close (kindly)"), ("hold", "Needs a maintainer")]
+            ("theme", "Move to themes/"), ("addon", "Close, and invite it as an add-on"),
+            ("showcase", "Close, and offer a SHOWCASE row for the fork"), ("close", "Close (kindly)"),
+            ("hold", "Needs a maintainer")]
 PRIO = {"p0": 0, "p1": 1, "p2": 2, "p3": 3, "": 4}
 BOT_LABELS = set(sticky.LABEL_VERDICT)
 HOLD_LABEL = "on-hold"          # the maintainer's own hold: never queued
@@ -46,7 +48,7 @@ def collect(api) -> tuple[dict[int, dict], dict]:
         if not s["sha"] or not p["head_sha"].startswith(s["sha"]):
             stats["stale"].append(p["number"])  # new commits since the review; phase 1 re-reviews on push
             continue
-        if s["verdict"] == "rework" and REWORK_LABEL in p["labels"]:
+        if s["verdict"] in ("rework", "theme") and REWORK_LABEL in p["labels"]:
             stats["waiting"].append(p["number"])
             continue
         items[p["number"]] = {"title": p["title"], "author": p["author"], **s}
@@ -57,8 +59,10 @@ def _line(n: int, it: dict, box: bool) -> str:
     title = _clean(it["title"], 90).replace("[", "(").replace("]", ")")
     who = re.sub(r"[^A-Za-z0-9-]", "", it["author"])  # no @: the queue must not ping authors
     extra = {"merge": it.get("reason"), "merge-with-fix": it.get("fix"), "rework": it.get("ask"),
-             "close": it.get("reason"), "hold": it.get("question")}[it["verdict"]]
-    lead = {"merge-with-fix": "fix: ", "rework": "ask: ", "close": "why: ", "hold": "question: "}.get(it["verdict"], "")
+             "close": it.get("reason"), "showcase": it.get("specific"), "addon": it.get("name") or it.get("specific"),
+             "theme": it.get("name") or it.get("specific"), "hold": it.get("question")}[it["verdict"]]
+    lead = {"merge-with-fix": "fix: ", "rework": "ask: ", "close": "why: ", "hold": "question: ",
+            "addon": "addons/", "theme": "themes/"}.get(it["verdict"], "")
     tail = f" · {lead}{_clean(extra, 200)}" if extra else ""
     prio = f" · {it['priority']}" if it.get("priority") else ""
     return f"{'- [ ] ' if box else '- '}#{n} {title} (by {who}){prio}{tail}"

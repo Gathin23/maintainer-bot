@@ -35,13 +35,17 @@ ignored: the issue must carry the `maintainer-queue` label and have been opened 
 | merge-with-fix | The fix from the review comment becomes search/replace edits (0G router, edits only, never runs code): at most 30 changed lines, each search text unique, no edits to `.github/`, the bot's rules, the prompt's safety rules or the disable/restore scripts. Branch `bot/merge-<n>` = the PR head (+ main merged in, only if the two conflict) + the fix commit "On merge: …"; opened as a bot PR "Merge #n with fix: title" whose body says what changed; merged with a merge commit once its CI is green. The original PR is then marked merged by GitHub (its head is reachable from main); if not, it is closed with a link to the bot PR. The PR's own checks don't gate this path (they are often red for exactly what the fix repairs, like a missing README row); CI on the bot branch does. |
 | rework | Kind comment with the ask, `needs-rework` label. PRs that already carry `needs-rework` are waiting for their author and are not queued again. |
 | close | Kind comment with the reason, PR closed. |
+| showcase | The showcase comment (thanks for something specific, the core stays small, add one row for your fork to SHOWCASE.md, a link to "Where does my idea go?"), PR closed. |
+| addon | The add-on invite (resubmit under `addons/<name>/` as a module card that never touches `launcher/`), PR closed. |
+| theme | The theme ask (move the look to `themes/<name>/` with a real-TV screenshot), `needs-rework` label; the PR stays open. |
 | needs a maintainer | Never touched by `/approve`; only an explicit `/close #n` or `/rework #n` moves it. |
 
 Every merged PR gets a short thank-you naming what changed on merge.
 
 ## Safety
 
-- Never merges PRs labelled `needs-maintainer`, `launcher` or `on-hold`, or PRs that change `.github/`,
+- Never merges PRs labelled `needs-maintainer` or `on-hold` (or `launcher`, when the review is a v1 review that
+  sent every launcher PR to the maintainer; a v2 review has passed the launcher gate), or PRs that change `.github/`,
   `.opencodereview/` or the bot's rules (`.github/maintainer/`), even if a command names them. An explicit
   `/close #n` or `/rework #n` from the owner still works on them (a comment, and for close, closing the PR).
   `on-hold` PRs are left out of the queue entirely.

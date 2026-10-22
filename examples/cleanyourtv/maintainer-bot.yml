@@ -5,12 +5,20 @@
 # (.github/maintainer/MAINTAINER.md) and precedents from the default branch, never from the PR.
 # It only writes one sticky comment and labels from a fixed list. It never merges, closes or approves.
 # The bot's own bot/* PRs (phase 2 merges and README counts) are not reviewed.
+#
+# Re-review: every push (synchronize) is reviewed again; a push that leaves the PR's own changes the same, or only
+# touches Markdown on a code or list PR, is re-checked without a model call. Every 6 hours a sweep re-reviews any
+# open PR whose review is older than its head commit (a missed or cancelled run), and only those cost anything.
+# Comments that are not "/bot review" get their own concurrency group, so an author's "done, pushed" comment
+# can no longer cancel the review of the push it talks about (that is what left #670 and #730 stale).
 name: maintainer-bot
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created]
+  schedule:
+    - cron: "23 */6 * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -22,19 +30,24 @@ permissions:
   pull-requests: write
   issues: write
 concurrency:
-  group: maintainer-bot-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || 'backfill' }}
+  # one review per PR at a time; a newer push cancels the older review. Ordinary comments never join the group.
+  group: >-
+    maintainer-bot-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || 'backfill' }}-${{
+    (github.event_name == 'issue_comment' && !startsWith(github.event.comment.body, '/bot review'))
+    && github.run_id || 'review' }}
   cancel-in-progress: true
 jobs:
   review:
     if: >-
       (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
        !startsWith(github.event.pull_request.head.ref, 'bot/')) ||
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
        startsWith(github.event.comment.body, '/bot review') &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # a single PR review gets 30 minutes; the backfill and the 6-hourly sweep keep 5 hours
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && 300 || 30 }}
     steps:
       - id: day
         run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
@@ -50,3 +63,6 @@ jobs:
           pr: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
           force: ${{ github.event_name == 'issue_comment' }}
           daily-cap-usd: "5"
+          # optional APK-size fact (off by default): CI saves the release APK's byte count as a tiny artifact and
+          # the bot reads it; needs `actions: read` above. See docs/v4.md, "APK size".
+          # apk-size-artifact: apk-size

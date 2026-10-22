@@ -56,7 +56,7 @@ class Commands:
             chosen = (pr in self.only) if self.only else (self.approve_all and pr not in self.excluded)
             if chosen:
                 text = item.get("fix") if v == "merge-with-fix" else item.get("ask") if v == "rework" else \
-                    item.get("reason", "")
+                    item.get("specific", "") if v in ("showcase", "addon", "theme") else item.get("reason", "")
                 out[pr] = {"action": v, "text": text or "", "source": "approve"}
         return out
 

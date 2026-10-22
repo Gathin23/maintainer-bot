@@ -3,7 +3,8 @@ description: Reviews pull requests the way your maintainer does; on a maintainer
 branding: { icon: check-circle, color: green }
 inputs:
   mode:
-    description: "review (phase 1, default) | queue (open today's queue issue) | command (act on a /approve comment)"
+    description: "review (phase 1, default) | refresh (after CI: facts and policy only, no model) | queue (open
+      today's queue issue) | command (act on a /approve comment)"
     required: false
     default: review
   github-token:
@@ -47,13 +48,21 @@ inputs:
     required: false
     default: "0.5"
   model:
-    description: 0G router model for the decision and the critic
+    description: 0G router model for the decision
     required: false
     default: claude-opus-5.5
   second-model:
     description: 0G router model for the cheap second opinion
     required: false
     default: glm-5.3-flash
+  critic-model:
+    description: 0G router model for the critic that reads every code merge
+    required: false
+    default: claude-sonnet-5
+  apk-size-artifact:
+    description: "optional: name of a CI artifact with the launcher APK size (needs actions: read); empty = off"
+    required: false
+    default: ""
   ledger-dir:
     description: where the spend ledger lives (cache it between runs to enforce the daily cap)
     required: false
@@ -79,6 +88,8 @@ runs:
         MB_PER_PR_CAP: ${{ inputs.per-pr-cap-usd }}
         MB_MODEL: ${{ inputs.model }}
         MB_SECOND_MODEL: ${{ inputs.second-model }}
+        MB_CRITIC_MODEL: ${{ inputs.critic-model }}
+        MB_APK_ARTIFACT: ${{ inputs.apk-size-artifact }}
         MB_PR: ${{ inputs.pr }}
         MB_FORCE: ${{ inputs.force }}
         MB_DRY_RUN: ${{ inputs.dry-run }}
@@ -93,6 +104,10 @@ runs:
         set -euo pipefail
         if [ "$MB_MODE" = "queue" ]; then
           python -m maintainer_bot queue-issue --repo "$MB_REPO"
+          exit 0
+        fi
+        if [ "$MB_MODE" = "refresh" ]; then
+          python -m maintainer_bot refresh --repo "$MB_REPO" --event "$GITHUB_EVENT_PATH"
           exit 0
         fi
         if [ "$MB_MODE" = "command" ]; then

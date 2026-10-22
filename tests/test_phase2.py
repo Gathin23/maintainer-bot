@@ -206,6 +206,47 @@ class ExecutorDecisions(unittest.TestCase):
         self.assertEqual([o["status"] for o in res["outcomes"]], ["skipped"] * 3)
         self.assertFalse([c for c in api.calls if c[0] == "merge"])
 
+    def test_launcher_label_blocks_only_a_v1_review(self):
+        api = FakeApi()
+        api.add_pr(1, title="launcher: dock_glass", sha="1" * 40, verdict="merge", labels=["launcher"], version=2,
+                   paths=["launcher/app/src/main/res/values/config.xml"])
+        api.add_pr(2, title="launcher: old review", sha="2" * 40, verdict="merge", labels=["launcher"],
+                   paths=["launcher/app/src/main/res/values/config.xml"])
+        n = _issue(api)
+        res = _executor(api).run(n, commands.parse("/approve"))
+        out = {o["pr"]: o for o in res["outcomes"]}
+        self.assertEqual(out[1]["status"], "done")
+        self.assertEqual(out[2]["status"], "skipped")
+        self.assertIn("maintainer only", out[2]["detail"])
+
+    def test_showcase_addon_and_theme(self):
+        api = FakeApi()
+        api.add_pr(1, title="launcher: weather card", sha="1" * 40, verdict="showcase", version=2,
+                   data={"m": "showcase", "specific": "the weather card's careful layout"})
+        api.add_pr(2, title="launcher: screen time", sha="2" * 40, verdict="addon", version=2,
+                   data={"m": "addon", "specific": "the counting tests", "fix": "screen-time"})
+        api.add_pr(3, title="launcher: amber look", sha="3" * 40, verdict="theme", version=2,
+                   data={"m": "theme", "specific": "the warm amber palette", "fix": "amber"})
+        n = _issue(api)
+        body = api.issues[n]["body"]
+        self.assertIn("### Close, and offer a SHOWCASE row for the fork (1)", body)
+        self.assertIn("### Close, and invite it as an add-on (1)", body)
+        self.assertIn("### Move to themes/ (1)", body)
+        cfg_link = "https://github.com/o/r/blob/main/CONTRIBUTING.md#where-does-my-idea-go"
+        res = Executor(api, Config(sleep=lambda s: None, log=lambda s: None, where_link=cfg_link)).run(
+            n, commands.parse("/approve"))
+        self.assertEqual({o["pr"]: o["status"] for o in res["outcomes"]}, {1: "done", 2: "done", 3: "done"})
+        self.assertEqual(api.prs[1]["state"], "closed")
+        self.assertIn("Thank you for this, the weather card's careful layout!", api.comments[1][-1]["body"])
+        self.assertIn("SHOWCASE.md", api.comments[1][-1]["body"])
+        self.assertIn(cfg_link, api.comments[1][-1]["body"])
+        self.assertEqual(api.prs[2]["state"], "closed")
+        self.assertIn("addons/screen-time/", api.comments[2][-1]["body"])
+        self.assertEqual(api.prs[3]["state"], "open")
+        self.assertIn("needs-rework", api.prs[3]["labels"])
+        self.assertIn("themes/amber/", api.comments[3][-1]["body"])
+        self.assertFalse([c for c in api.calls if c[0] == "merge"])
+
     def test_close_command_moves_a_held_pr(self):
         api = _queue_api()
         n = _issue(api)

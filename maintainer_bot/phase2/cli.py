@@ -7,7 +7,7 @@ import shlex
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from .. import fix as fix_mod
+from .. import fix as fix_mod, templates
 from ..ledger import Ledger
 from . import commands, queue as queue_mod
 from .api import Api
@@ -66,7 +66,8 @@ def on_comment(repo: str, event_path: str, *, allow: str = "", workdir: str = ""
         git = Git(workdir, base=os.environ.get("MB_BASE", "main"),
                   author=(git_name or "maintainer-bot", git_email or "maintainer-bot@users.noreply.github.com"))
     cfg = Config(approver=author, model=model, ledger=daily_ledger(ledger_path, cap), propose=fix_mod.propose,
-                 git=git, counts=counts_runner(counts_cmd) if counts_cmd else None)
+                 git=git, counts=counts_runner(counts_cmd) if counts_cmd else None,
+                 where_link=templates.where_link(repo))
     return Executor(api, cfg).run(issue["number"], cmds)
 
 

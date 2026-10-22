@@ -1,6 +1,10 @@
-"""Live review of one pull request: read it through the GitHub API, decide with the v3 policy on the 0G router,
+"""Live review of one pull request: read it through the GitHub API, decide with the v4 policy on the 0G router,
 and keep ONE sticky comment plus a few labels up to date. Phase 1 only suggests: it never merges, closes,
 approves or pushes.
+
+Re-review: every push (synchronize) is reviewed again. When the PR's own changes are the same as at the last
+review (main moved, a rebase) or only Markdown changed on a PR whose substance is code or a list, the bot keeps
+the model's earlier judgement and only re-runs the deterministic facts and the policy: no model call.
 
 Safety model (see README): nothing here checks out or runs PR code. The PR is read as data through the API
 (title, body, file list, patches). The rules and the precedent file are read from the base repo's default
@@ -8,27 +12,33 @@ branch, never from the PR, so a PR cannot rewrite its own rules.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import time
+import zipfile
 from datetime import datetime, timezone
 
 import requests
 
-from . import checklists, facts as facts_mod, retrieval, v3
+from . import checklists, facts as facts_mod, retrieval, templates, v4
 from .ledger import BudgetExceeded, Ledger
 
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- maintainer-bot"
+DATA_MARK = "<!-- mb-review "   # the model's judgement, kept for a re-review without a model call
 FOOTER = "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai)</sub>"
 
 # labels the bot may add or remove; it never touches any other label
 TYPE_LABELS = {"tv-list": "tv-list", "launcher": "launcher", "tools": "scripts", "docs": "docs", "showcase": "docs",
                "theme": "launcher"}
 VERDICT_LABELS = {"merge": "bot-suggests:merge", "merge-with-fix": "bot-suggests:merge-with-fix",
-                  "rework": "bot-suggests:rework", "close": "bot-suggests:close", "hold": "needs-maintainer"}
+                  "rework": "bot-suggests:rework", "close": "bot-suggests:close",
+                  "showcase": "bot-suggests:showcase", "addon": "bot-suggests:addon", "theme": "bot-suggests:theme",
+                  "hold": "needs-maintainer"}
 PRIORITY_LABELS = ("p0", "p1", "p2", "p3")
 BOT_OWNED = set(VERDICT_LABELS.values()) | set(PRIORITY_LABELS)
 ALLOWED = BOT_OWNED | set(TYPE_LABELS.values()) | {"google-tv"}
@@ -47,7 +57,9 @@ ACTED = re.compile(r"\b(merged|closing this|closed this|on merge|I'?m (adding|ch
                    r"I (added|changed|commented|closed|merged|moved|fixed))\b", re.I)
 
 VERDICT_WORDS = {"merge": "merge", "merge-with-fix": "merge with a small fix", "rework": "a few changes first",
-                 "close": "close (kindly)", "hold": "a maintainer decision"}
+                 "close": "close (kindly)", "showcase": "your own fork, with a row in SHOWCASE.md",
+                 "addon": "an add-on under addons/", "theme": "a theme under themes/",
+                 "hold": "a maintainer decision"}
 
 
 # ---------- GitHub ----------
@@ -120,7 +132,8 @@ def snapshot(gh: GitHub, n: int) -> dict:
             "head_ref": pr["head"]["ref"],
             "own_branch": (pr["head"].get("repo") or {}).get("full_name") == pr["base"]["repo"]["full_name"],
             "default_branch": pr["base"]["repo"]["default_branch"], "draft": pr.get("draft", False),
-            "state": pr["state"], "labels": [l["name"] for l in pr.get("labels") or []], "files": files}
+            "state": pr["state"], "labels": [l["name"] for l in pr.get("labels") or []], "files": files,
+            "mergeable": pr.get("mergeable"), "mergeable_state": pr.get("mergeable_state", "")}
 
 
 def main_tree(gh: GitHub, branch: str) -> list[str]:
@@ -131,8 +144,66 @@ def main_tree(gh: GitHub, branch: str) -> list[str]:
 def repo_context(gh: GitHub, branch: str) -> dict:
     paths = main_tree(gh, branch)
     folders = {p.split("/")[1] for p in paths if p.startswith("examples/") and p.count("/") >= 2}
-    locales = sum(1 for p in paths if re.match(r"^launcher/app/src/main/res/values-[^/]+/strings\.xml$", p))
-    return {"list_folders": folders, "locale_count": locales}
+    locales = sorted({m.group(1) for p in paths
+                      if (m := re.match(r"^launcher/app/src/main/res/values-([^/]+)/strings\.xml$", p))})
+    return {"list_folders": folders, "locale_count": len(locales), "locales": locales,
+            "themes": {p.split("/")[1] for p in paths if p.startswith("themes/") and p.count("/") >= 2},
+            "addons": {p.split("/")[1] for p in paths if p.startswith("addons/") and p.count("/") >= 2},
+            "examples_readme": gh.file_text("examples/README.md", branch) or ""}
+
+
+def conflicts_with_main(gh: GitHub, snap: dict, ptype: str) -> bool | None:
+    """From GitHub's mergeable flag (computed in the background, so it is retried once). A list or showcase PR
+    whose only conflict can be README table rows is not blocked: those are resolved mechanically on merge."""
+    m = snap.get("mergeable")
+    if m is None and not getattr(gh, "dry_run", True):
+        time.sleep(3)
+        try:
+            m = (gh.get(f"/pulls/{snap['pr']}") or {}).get("mergeable")
+        except requests.RequestException:
+            m = None
+    if m is None:
+        return None
+    if m:
+        return False
+    if ptype in ("tv-list", "showcase") and all(
+            f["path"] in v4.TABLE_FILES or f["path"].startswith("examples/") for f in snap["files"]):
+        return False
+    return True
+
+
+def ci_facts(gh: GitHub, sha: str, *, ignore: tuple[str, ...] = ("review",), apk_artifact: str = "") -> dict:
+    """Finished checks that failed on the head commit and, optionally, the launcher APK size that CI saved as a
+    small artifact (a text file with the byte count). Pending checks say nothing yet."""
+    out: dict = {}
+    try:
+        runs = (gh.get(f"/commits/{sha}/check-runs", per_page=100) or {}).get("check_runs", [])
+    except requests.RequestException:
+        return out
+    failed = sorted({r["name"] for r in runs if r.get("status") == "completed"
+                     and r.get("conclusion") in ("failure", "timed_out") and r["name"] not in ignore})
+    if failed:
+        out["ci_failed"] = failed
+    if apk_artifact:
+        try:
+            for run in (gh.get("/actions/runs", head_sha=sha, per_page=20) or {}).get("workflow_runs", []):
+                arts = (gh.get(f"/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
+                art = next((a for a in arts if a["name"] == apk_artifact and not a.get("expired")), None)
+                if not art:
+                    continue
+                z = gh.s.get(art["archive_download_url"], timeout=60)
+                with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
+                    text = zf.read(zf.namelist()[0]).decode()
+                m = re.search(r"(\d{5,9})", text)
+                g = re.search(r"gate\D{0,5}(\d{5,9})", text)
+                if m:
+                    out["apk_bytes"] = int(m.group(1))
+                    if g:
+                        out["apk_gate_bytes"] = int(g.group(1))
+                break
+        except (requests.RequestException, zipfile.BadZipFile, KeyError, IndexError, ValueError):
+            pass
+    return out
 
 
 def other_open_list_folders(gh: GitHub, snap: dict, my_folders: list[str], max_fetch: int = 12) -> dict:
@@ -160,12 +231,48 @@ def other_open_list_folders(gh: GitHub, snap: dict, my_folders: list[str], max_f
 
 # ---------- the sticky comment ----------
 
-def find_sticky(gh: GitHub, n: int) -> tuple[int | None, str]:
+def find_sticky(gh: GitHub, n: int) -> tuple[int | None, str, dict]:
+    """(comment id, reviewed sha, the stored judgement of a v2 review or {})."""
     for c in gh.paged(f"/issues/{n}/comments", limit=300):
         if MARKER in (c.get("body") or ""):
             m = re.search(r"sha=([0-9a-f]{7,40})", c["body"])
-            return c["id"], (m.group(1) if m else "")
-    return None, ""
+            return c["id"], (m.group(1) if m else ""), read_data(c["body"])
+    return None, "", {}
+
+
+def read_data(body: str) -> dict:
+    i = (body or "").find(DATA_MARK)
+    if i < 0:
+        return {}
+    j = body.find(" -->", i)
+    try:
+        return json.loads(body[i + len(DATA_MARK):j])
+    except ValueError:
+        return {}
+
+
+def write_data(d: dict) -> str:
+    """The stored judgement as one hidden line; "--" can't appear inside an HTML comment."""
+    return DATA_MARK + json.dumps(d, separators=(",", ":"), ensure_ascii=True).replace("--", "\\u002d\\u002d") + " -->"
+
+
+def diff_hash(snap: dict) -> str:
+    """The PR's own changes (paths and patches), so a rebase or a merge of main is recognised as the same PR."""
+    h = hashlib.sha256()
+    for f in sorted(snap["files"], key=lambda f: f["path"]):
+        body = "\n".join(l for l in (f.get("patch") or "").splitlines() if l.startswith(("+", "-")))
+        h.update(f"{f['path']}\0{body}\0".encode())
+    return h.hexdigest()[:16]
+
+
+def docs_only_since(gh: GitHub, old: str, new: str) -> bool:
+    """True when every file changed between the reviewed commit and the new head is Markdown (not PROMPT.md)."""
+    try:
+        files = (gh.get(f"/compare/{old}...{new}") or {}).get("files") or []
+    except requests.RequestException:
+        return False
+    return bool(files) and all(f["filename"].endswith(".md") and f["filename"] != "PROMPT.md"
+                               and not f["filename"].startswith(".github/") for f in files)
 
 
 def _clean(text: str, limit: int = 500) -> str:
@@ -185,10 +292,13 @@ def checks(fx: dict, ptype: str) -> list[str]:
     ok, note = "OK", "Note"
     out = []
     if fx.get("list_folders"):
-        if fx.get("duplicate_of_merged_folder"):
-            out.append(f"**{note}**: the folder already exists on main: `{'`, `'.join(fx['duplicate_of_merged_folder'])}`")
+        if fx.get("edits_existing_list"):
+            out.append(f"**{note}**: edits a list already on main: `{'`, `'.join(fx['edits_existing_list'][:3])}`")
         else:
             out.append(f"**{ok}**: new TV folder, not on main yet: `{'`, `'.join(fx['list_folders'][:3])}`")
+        if fx.get("same_product_on_main"):
+            hits = sorted({f for fs in fx["same_product_on_main"].values() for f in fs})
+            out.append(f"**{note}**: the same product or firmware is named in `{'`, `'.join(hits[:3])}` on main")
         if fx.get("competing_open_prs"):
             refs = ", ".join(f"#{p}" for ps in fx["competing_open_prs"].values() for p in ps)
             out.append(f"**{note}**: another open PR adds the same folder: {refs}")
@@ -199,25 +309,66 @@ def checks(fx: dict, ptype: str) -> list[str]:
                    if fx.get("pairing_or_input_packages_disabled") else f"**{ok}**: remote pairing and input left alone")
         out.append(f"**{note}**: uses `pm hide`/`pm block` without the matching undo in the header"
                    if fx.get("hide_without_undo") else f"**{ok}**: everything it changes can be undone")
+        if fx.get("uninstall_steps"):
+            out.append(f"**{note}**: `pm uninstall` steps: `{'`, `'.join(fx['uninstall_steps'][:3])}`")
+        if fx.get("private_dns_setup"):
+            out.append(f"**{note}**: sets up Private DNS in `{'`, `'.join(fx['private_dns_setup'][:2])}`")
+        if fx.get("list_folder_scripts"):
+            out.append(f"**{note}**: the folder has its own scripts: `{'`, `'.join(fx['list_folder_scripts'][:3])}`")
+        if fx.get("untested_entries"):
+            out.append(f"**{note}**: entries marked untested: `{'`, `'.join(fx['untested_entries'][:3])}`")
+        if fx.get("firmware_updater_disabled"):
+            out.append(f"**{note}**: disables an updater: `{'`, `'.join(fx['firmware_updater_disabled'][:3])}`")
+    if fx.get("core_lines_changed") is not None and (fx.get("core_lines_changed") or fx.get("core_files")):
+        keys = fx.get("new_config_keys") or []
+        out.append(f"Launcher: {fx['core_lines_changed']} lines changed in `launcher/` (tests not counted)"
+                   + (", new keys: " + ", ".join(f"`{k['name']}` = `{k['default'] or 'empty'}`" for k in keys[:4])
+                      if keys else ""))
+        if fx.get("changed_config_defaults"):
+            out.append(f"**{note}**: changes a default for every TV: " + ", ".join(
+                f"`{c['name']}` {c['old'] or 'empty'} → {c['new'] or 'empty'}" for c in fx["changed_config_defaults"][:3]))
+        if fx.get("new_strings"):
+            miss = fx.get("locales_missing_new_strings")
+            if miss:
+                out.append(f"**{note}**: new strings missing in {len(miss)} of {fx.get('locales_on_main', '?')} "
+                           f"locales ({', '.join(miss[:6])}{'…' if len(miss) > 6 else ''})")
+            elif miss is not None:
+                out.append(f"**{ok}**: new strings in every locale")
+        perms = (fx.get("new_permissions") or []) + (fx.get("network_use") or [])
+        out.append(f"**{note}**: new permission or network use: `{'`, `'.join(perms[:4])}`" if perms
+                   else f"**{ok}**: no new permission, no network use")
+        if fx.get("manifest_changes"):
+            out.append(f"**{note}**: changes the manifest ({', '.join(fx['manifest_changes'])})")
+        if fx.get("home_path_touched"):
+            out.append(f"**{note}**: touches the Home/launch path: "
+                       + ", ".join(f"`{x.rsplit('/', 1)[-1]}`" for x in fx["home_path_touched"][:3]))
+        if fx.get("apk_bytes"):
+            out.append(f"APK: {fx['apk_bytes']:,} B" + (f" (gate {fx['apk_gate_bytes']:,} B)" if fx.get("apk_gate_bytes") else ""))
+    if fx.get("conflicts_with_main"):
+        out.append(f"**{note}**: conflicts with main")
+    if fx.get("ci_failed"):
+        out.append(f"**{note}**: CI fails: {', '.join(fx['ci_failed'][:3])}")
+    if fx.get("theme_missing_screenshot"):
+        out.append(f"**{note}**: no real-TV screenshot for `themes/{fx['theme_missing_screenshot'][0]}/`")
+    if fx.get("addon_touches_launcher"):
+        out.append(f"**{note}**: an add-on that also changes `launcher/`")
+    if fx.get("unlinked_images") or fx.get("stray_root_files"):
+        out.append(f"**{note}**: files nothing links to: `{'`, `'.join(((fx.get('stray_root_files') or []) + (fx.get('unlinked_images') or []))[:3])}`")
     if fx.get("binary_files"):
         out.append(f"**{note}**: adds prebuilt binaries: `{'`, `'.join(fx['binary_files'][:3])}`")
-    if fx.get("adds_internet_permission"):
+    if fx.get("adds_internet_permission") and not fx.get("new_permissions"):
         out.append(f"**{note}**: adds the INTERNET permission to the launcher")
-    elif ptype == "launcher":
-        out.append(f"**{ok}**: no INTERNET permission added")
-    gap = facts_mod.strings_gap(fx)
-    if gap:
-        out.append(f"**{note}**: {gap}")
-    if fx.get("sensitive_paths"):
-        out.append(f"**{note}**: touches maintainer-only paths: `{'`, `'.join(fx['sensitive_paths'][:4])}`")
+    if fx.get("sensitive_paths") or fx.get("always_maintainer_paths"):
+        paths = sorted(set((fx.get("sensitive_paths") or []) + (fx.get("always_maintainer_paths") or [])))
+        out.append(f"**{note}**: touches maintainer-only paths: `{'`, `'.join(paths[:4])}`")
     out.append(f"Size: {fx['size']} (+{fx['additions']} -{fx['deletions']}, {fx['files']} files)")
     return out
 
 
 def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reason: str, fix: str, why_held: str,
-           fx: dict, ptype: str, cost: float) -> str:
+           fx: dict, ptype: str, cost: float, elsewhere: str = "", data: dict | None = None, note: str = "") -> str:
     head = snap["head_sha"][:12]
-    lines = [f"{MARKER} sha={head} v=1 -->"]
+    lines = [f"{MARKER} sha={head} v=2 -->"]
     if verdict == "hold":
         lines.append(f"**maintainer-bot review** · this one needs **a maintainer decision**")
         lines.append("")
@@ -226,25 +377,33 @@ def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reaso
         lines.append(f"Why it goes to a maintainer: {_clean(why_held, 240)}.")
         if model_verdict and model_verdict != "hold":
             lines.append(f"The bot's own suggestion would be: {VERDICT_WORDS.get(model_verdict, model_verdict)}.")
+    elif verdict in v4.ELSEWHERE:
+        lines.append(f"**maintainer-bot review** · suggests **{VERDICT_WORDS[verdict]}** ({priority})")
+        lines.append("")
+        lines.append(elsewhere)
     else:
         lines.append(f"**maintainer-bot review** · suggests **{VERDICT_WORDS[verdict]}** ({priority})")
         lines.append("")
         lines.append(_opening(reason))
         if verdict == "merge-with-fix" and fix:
-            lines += ["", f"**The small fix:** {_clean(fix, 400)}"]
+            lines += ["", f"**The small fix:** {_clean(fix, 500)}"]
         elif verdict == "rework" and fix:
             lines += ["", f"**What would help:** {_clean(fix, 400)}"]
+    if note:
+        lines += ["", f"_{_clean(note, 200)}_"]
     lines += ["", "<details><summary>Checks</summary>", ""]
     lines += [f"- {c}" for c in checks(fx, ptype)]
     lines += ["", "</details>", "",
               "This is a suggestion; a maintainer makes the final call. A maintainer can comment `/bot review` "
               "to run it again.", "", FOOTER]
+    if data:
+        lines.append(write_data(data))
     return "\n".join(lines)
 
 
 def render_skip(snap: dict, paths: list[str]) -> str:
     return "\n".join([
-        f"{MARKER} sha={snap['head_sha'][:12]} v=1 -->",
+        f"{MARKER} sha={snap['head_sha'][:12]} v=2 -->",
         "**maintainer-bot review** · this one needs **a maintainer**",
         "",
         "Thanks for the PR! It changes CI or review configuration "
@@ -292,9 +451,13 @@ def load_precedents(text: str) -> tuple[list[dict], dict, dict]:
 
 def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | None = None, dry_run: bool = False,
            force: bool = False, ledger_path: str = ".maintainer-bot/ledger.jsonl", daily_cap: float = 5.0,
-           per_pr_cap: float = 0.5, model: str = "claude-opus-5.5", critic: str = "claude-opus-5.5",
-           second: str = "glm-5.3-flash", threshold: float = 0.65, rules_path: str = ".github/maintainer/MAINTAINER.md",
-           precedents_path: str = ".github/maintainer/precedents.jsonl", log=print) -> dict:
+           per_pr_cap: float = 0.5, model: str = "claude-opus-5.5", critic: str = "claude-sonnet-5",
+           second: str = "glm-5.3-flash", policy: dict | None = None,
+           rules_path: str = ".github/maintainer/MAINTAINER.md",
+           precedents_path: str = ".github/maintainer/precedents.jsonl", apk_artifact: str = "", refresh: bool = False,
+           log=print) -> dict:
+    """One review. refresh=True (after CI finished): re-run only the facts and the policy on the stored judgement,
+    even at a commit that was already reviewed; it never calls a model."""
     gh = GitHub(repo, dry_run=dry_run)
     snap = snapshot(gh, n)
     result = {"pr": n, "title": snap["title"], "head": snap["head_sha"][:12]}
@@ -302,8 +465,11 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
         return {**result, "skipped": "closed or draft"}
     if snap.get("own_branch") and snap.get("head_ref", "").startswith("bot/"):
         return {**result, "skipped": "the bot's own merge or counts PR"}
-    sticky_id, sticky_sha = find_sticky(gh, n)
-    if not force and sticky_sha and snap["head_sha"].startswith(sticky_sha):
+    sticky_id, sticky_sha, before = find_sticky(gh, n)
+    same_commit = bool(sticky_sha) and snap["head_sha"].startswith(sticky_sha)
+    if refresh and not before.get("m"):
+        return {**result, "skipped": "no stored review to refresh"}
+    if not force and not refresh and same_commit:
         return {**result, "skipped": "already reviewed at this commit"}
 
     paths = [f["path"] for f in snap["files"]]
@@ -317,53 +483,87 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
                 "labels_added": add, "labels_removed": rem}
 
     branch = snap["default_branch"]
-    rules_md = rules_md if rules_md is not None else (gh.file_text(rules_path, branch) or "")
-    precedents = precedents if precedents is not None else (gh.file_text(precedents_path, branch) or "")
     ctxinfo = repo_context(gh, branch)
-    my_folders = sorted({m.group(1) for p in paths if (m := re.match(r"^examples/([^/]+)/", p))})
-    fx = facts_mod.compute(snap, existing_list_folders=ctxinfo["list_folders"],
-                           other_open_list_folders=other_open_list_folders(gh, snap, my_folders),
-                           locale_count=ctxinfo["locale_count"])
     ptype = checklists.pr_type(paths, snap["title"])
+    my_folders = sorted({m.group(1) for p in paths if (m := re.match(r"^examples/([^/]+)/", p))})
+    extra = ci_facts(gh, snap["head_sha"], apk_artifact=apk_artifact) if ptype != "docs" else {}
+    fx = facts_mod.compute_v4(snap, existing_list_folders=ctxinfo["list_folders"],
+                              other_open_list_folders=other_open_list_folders(gh, snap, my_folders),
+                              main_locales=ctxinfo.get("locales") or [],
+                              examples_readme=ctxinfo.get("examples_readme", ""),
+                              theme_folders_on_main=ctxinfo.get("themes"), addon_folders_on_main=ctxinfo.get("addons"),
+                              conflicts_with_main=conflicts_with_main(gh, snap, ptype),
+                              ci_failed=extra.get("ci_failed"), apk_bytes=extra.get("apk_bytes"),
+                              apk_gate_bytes=extra.get("apk_gate_bytes"))
+    dh = diff_hash(snap)
 
-    hist, files_by_pr, bodies = load_precedents(precedents)
-    now = datetime.now(timezone.utc).isoformat()
-    row = {"pr": n, "title": snap["title"], "decided_at": now, "truth": None, "family": "?", "split": "live",
-           "type": ptype, "batch_dependent": False, "facts": fx, "top_dirs": fx["top_dirs"], "batch": {}}
-    if fx.get("competing_open_prs"):
-        row["batch"]["other_open_prs_adding_the_same_folder"] = fx["competing_open_prs"]
-    files_by_pr[n] = paths
-    bodies[n] = snap["body"]
-    ctx = {"snaps": {n: snap}, "index": retrieval.Index(hist + [row], files_by_pr, bodies)}
+    # re-review without a model call: same changes as last time, or only Markdown on a code/list PR
+    note, cost, res = "", 0.0, None
+    if before.get("m") and not force:
+        if refresh and same_commit:
+            note = "Re-checked after CI finished on this commit."
+        elif before.get("diff") == dh:
+            note = "Re-checked at this commit: the PR's own changes are the same as at the last review."
+        elif ptype not in ("docs", "showcase") and sticky_sha and docs_only_since(gh, sticky_sha, snap["head_sha"]):
+            note = "Re-checked at this commit: only Markdown changed since the last review."
+        if note:
+            res = {"verdict": before["m"], "confidence": float(before.get("c") or 0),
+                   "critic": {"blocker": bool(before.get("crit"))}, "second": {"verdict": before.get("sec")},
+                   "comment": before.get("reason", ""), "reasons": [], "fix": before.get("fix", ""),
+                   "specific": before.get("specific", ""), "priority": before.get("p", "p2")}
 
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path = ledger_path.replace(".jsonl", f"-{day}.jsonl")
-    day_ledger = Ledger(path, daily_cap)
-    if day_ledger.spent >= daily_cap:
-        return {**result, "skipped": f"daily cap reached (${day_ledger.spent:.2f} of ${daily_cap:.2f})"}
-    start = day_ledger.spent
-    L = Ledger(path, min(daily_cap, start + per_pr_cap))
-    try:
-        res = v3.judge(row, ctx, rules_md=rules_md, model=model, critic_model=critic, second_model=second, ledger=L,
-                       system_extra=LIVE_SYSTEM)
-    except BudgetExceeded as e:
-        return {**result, "skipped": str(e)}
-    verdict, why = v3.final(res, fx, threshold=threshold, use_critic=True, use_second=True)
+    if res is None:
+        rules_md = rules_md if rules_md is not None else (gh.file_text(rules_path, branch) or "")
+        precedents = precedents if precedents is not None else (gh.file_text(precedents_path, branch) or "")
+        hist, files_by_pr, bodies = load_precedents(precedents)
+        now = datetime.now(timezone.utc).isoformat()
+        row = {"pr": n, "title": snap["title"], "decided_at": now, "truth": None, "type": ptype, "facts": fx,
+               "batch": {}}
+        if fx.get("competing_open_prs"):
+            row["batch"]["other_open_prs_adding_the_same_folder"] = fx["competing_open_prs"]
+        files_by_pr[n] = paths
+        bodies[n] = snap["body"]
+        index = retrieval.Index(hist + [row], files_by_pr, bodies)
+
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = ledger_path.replace(".jsonl", f"-{day}.jsonl")
+        day_ledger = Ledger(path, daily_cap)
+        if day_ledger.spent >= daily_cap:
+            return {**result, "skipped": f"daily cap reached (${day_ledger.spent:.2f} of ${daily_cap:.2f})"}
+        start = day_ledger.spent
+        L = Ledger(path, min(daily_cap, start + per_pr_cap))
+        try:
+            res = v4.judge(row, snap, index, rules_md=rules_md, model=model, critic_model=critic,
+                           second_model=second, ledger=L, system_extra=LIVE_SYSTEM)
+        except BudgetExceeded as e:
+            return {**result, "skipped": str(e)}
+        cost = L.spent - start
+
+    verdict, why, policy_fix = v4.final(res, fx, policy)
     priority = res.get("priority") or "p2"
     reason = res.get("comment") or ""
     if not reason or ACTED.search(reason):  # the note must never claim something already happened
         reason = "; ".join(res.get("reasons") or []) or reason
-    cost = L.spent - start
-    fix = res.get("fix", "")
-    if verdict == "rework" and res["verdict"] in v3.ACCEPT and why:
-        fix = why  # a deterministic rule turned a merge into a rework: that rule is the ask
+    fix = res.get("fix", "") if verdict in ("merge-with-fix", "rework") and res["verdict"] == verdict else ""
+    if verdict == "rework" and res["verdict"] != "rework" and why:
+        fix = why  # a deterministic rule turned the verdict into a rework: that rule is the ask
+    if verdict == "merge-with-fix" and policy_fix:
+        fix = "; ".join(x for x in (fix, policy_fix) if x)
+    elsewhere = ""
+    if verdict in v4.ELSEWHERE:
+        elsewhere = templates.render(verdict, specific=res.get("specific", ""), name=res.get("fix", ""),
+                                     link=templates.where_link(repo, branch))
+    data = {"m": res["verdict"], "c": round(float(res.get("confidence") or 0), 2),
+            "crit": int(bool((res.get("critic") or {}).get("blocker"))), "sec": (res.get("second") or {}).get("verdict"),
+            "diff": dh, "p": priority, "reason": _clean(reason, 400), "fix": _clean(res.get("fix", ""), 300),
+            "specific": _clean(res.get("specific", ""), 140), "final": verdict}
     body = render(snap, verdict=verdict, model_verdict=res["verdict"], priority=priority, reason=reason,
-                  fix=fix, why_held=why, fx=fx, ptype=ptype, cost=cost)
+                  fix=fix, why_held=why, fx=fx, ptype=ptype, cost=cost, elsewhere=elsewhere, data=data, note=note)
     labels = labels_for(ptype, verdict, priority if verdict != "hold" else "", fx, snap)
     _post(gh, n, sticky_id, body)
     add, rem = sync_labels(gh, n, snap["labels"], labels)
     return {**result, "type": ptype, "verdict": verdict, "model_verdict": res["verdict"], "why_held": why,
-            "reasons": res.get("reasons") or [], "fix": fix,
+            "reasons": res.get("reasons") or [], "fix": fix, "re_review": bool(note),
             "confidence": res.get("confidence"), "priority": priority, "labels": labels, "labels_added": add,
             "labels_removed": rem, "cost_usd": round(cost, 4), "comment": body}
 
@@ -373,6 +573,24 @@ def _post(gh: GitHub, n: int, sticky_id: int | None, body: str) -> None:
         gh.write("PATCH", f"/issues/comments/{sticky_id}", {"body": body})
     else:
         gh.write("POST", f"/issues/{n}/comments", {"body": body})
+
+
+def prs_for_workflow_run(gh: GitHub, event: dict) -> list[int]:
+    """Open PRs whose head is the commit a finished CI run tested. A fork PR's workflow_run carries no
+    pull_requests list, so it is looked up by the head repository's owner and branch."""
+    run = event.get("workflow_run") or {}
+    found = [p["number"] for p in run.get("pull_requests") or []]
+    if not found and run.get("head_branch") and (run.get("head_repository") or {}).get("owner"):
+        owner = run["head_repository"]["owner"]["login"]
+        found = [p["number"] for p in gh.paged("/pulls", limit=10, state="open", head=f"{owner}:{run['head_branch']}")
+                 if p["head"]["sha"] == run.get("head_sha")]
+    return found
+
+
+def refresh_after_ci(repo: str, event_path: str, **kw) -> list[dict]:
+    event = json.load(open(event_path, encoding="utf-8"))
+    gh = GitHub(repo, dry_run=kw.get("dry_run", False))
+    return [review(repo, n, refresh=True, **kw) for n in prs_for_workflow_run(gh, event)]
 
 
 def backfill(repo: str, **kw) -> list[dict]:

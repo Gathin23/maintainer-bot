@@ -1,9 +1,10 @@
 # maintainer-bot
 
 A review bot for busy open-source repos. Every pull request gets one short comment that says what should
-happen to it (merge, merge with a small fix, a few changes first, close, or a maintainer decision), why,
-and which checks it ran, judged the way **your** maintainer judges: from your written rules and your own
-past decisions on similar PRs. It runs on [0G Private Computer](https://pc.0g.ai): one API key, many models.
+happen to it (merge, merge with a small fix, a few changes first, close, a better home for the idea, or a
+maintainer decision), why, and which checks it ran, judged the way **your** maintainer judges: from your written
+rules and your own past decisions on similar PRs. It runs on [0G Private Computer](https://pc.0g.ai): one API key,
+many models.
 
 Built for [CleanYourTV](https://github.com/Gathin23/cleanyourtv), which got 500+ pull requests in its first
 four days.
@@ -20,29 +21,50 @@ or requests changes. **Phase 2** (below) acts, but only on a maintainer's `/appr
     packages, undo coverage, binaries, network permission, strings per locale, size)
   - "Reviewed by maintainer-bot · runs on 0G Private Computer"
 - Labels from a fixed list only: `bot-suggests:merge`, `bot-suggests:merge-with-fix`,
-  `bot-suggests:rework`, `bot-suggests:close`, `needs-maintainer`, `p0`–`p3`, and the repo's type labels.
-  It removes only labels it owns.
+  `bot-suggests:rework`, `bot-suggests:close`, `bot-suggests:showcase`, `bot-suggests:addon`,
+  `bot-suggests:theme`, `needs-maintainer`, `p0`–`p3`, and the repo's type labels. It removes only labels it owns.
+
+## A small core and a well-indexed hub (v4)
+
+Big repos drown when every good idea has to be merged or argued about. v4 gives every idea a home:
+
+| The idea | The bot suggests |
+|---|---|
+| A fix, a list, docs, a translation, a small switch that is off by default | merge / merge-with-fix |
+| A new look that a theme folder can carry | `bot-suggests:theme`: move it to `themes/<name>/` |
+| A feature that can be its own small app | `bot-suggests:addon`: send it again under `addons/<name>/` |
+| A big rewrite, a new permission or network access, a port, a different launcher | `bot-suggests:showcase`: keep it in your fork, add a row to SHOWCASE.md |
+
+The three "elsewhere" verdicts come with a short, warm comment that thanks the author for something specific and
+links the repo's "Where does my idea go?" table. Launcher PRs no longer go to the maintainer by default: facts
+from the diff (new config keys and their defaults, strings per locale, lines changed, permissions, network use,
+manifest and Home path, conflicts with main, CI, optionally the APK size) decide which ones are small opt-in
+switches the bot may suggest merging.
 
 ## How it decides
 
 ```
-1. Facts (no AI)        folders, size, duplicate list folders, competing open PRs, protected packages,
-                        remote-pairing/input packages, pm hide without an undo, binaries, INTERNET
-                        permission, strings missing in locales, maintainer-only paths
+1. Facts (no AI)        folders, size, competing open PRs, protected packages, remote-pairing/input packages,
+                        pm hide without an undo, binaries; launcher: new config keys and defaults, strings per
+                        locale, lines changed, permissions, network use, manifest, Home path, conflicts, CI,
+                        APK size; lists: uninstall steps, Private DNS setup, own scripts, untested entries,
+                        the same product on main, edits to a list on main; stray files; maintainer-only paths
 2. Decision (AI)        your rules (MAINTAINER.md) + a checklist for this kind of PR + your past decisions
                         on the most similar PRs, with the reasons you gave
-3. Critic (AI)          for every merge: "what is the strongest rule-backed reason NOT to merge?"
+3. Critic (AI)          for every merge of code or judgement-call merge: "the strongest rule-backed reason
+                        NOT to merge?"
 4. Second opinion (AI)  a cheaper model; if it disagrees, the PR goes to the maintainer
 5. Hard rules           deterministic rules always win and can only make a verdict more cautious
 ```
 
-Some kinds of PR always go to the maintainer, whatever the model thinks: launcher/app code, CI and
-workflows, and anything that edits the bot's own rules.
+Some kinds of PR always go to the maintainer, whatever the model thinks: safety rules and PROMPT.md, CI and
+workflows, anything that edits the bot's own rules, and lists that disable protected packages. A launcher merge
+also needs a small, off-by-default change with strings in every locale, no new permission or network use, no
+conflict with main and a little more confidence; Home-path, manifest and same-product changes need a lot more.
 
-Backtested on CleanYourTV's real history (train on older rounds, test on newer ones): when the bot decides
-on its own it agrees with the maintainer 96% of the time, and it decides alone on about 40% of PRs
-(TV lists, docs, showcase entries); everything else is escalated. In a blind head-to-head on 61 new PRs it
-caught three problems the human-style review missed.
+Backtested on CleanYourTV's real history (train on older rounds, test on newer ones). See
+[report/v4.md](report/v4.md) for v4 against v3 on 219 decisions from 21–22 Oct 2026, and
+[report/v3.md](report/v3.md) for the earlier rounds.
 
 ## Install on your repo
 
@@ -55,13 +77,17 @@ caught three problems the human-style review missed.
 4. Create the labels once:
 
 ```bash
-for l in bot-suggests:merge bot-suggests:merge-with-fix bot-suggests:rework bot-suggests:close needs-maintainer p0 p1 p2 p3; do
+for l in bot-suggests:merge bot-suggests:merge-with-fix bot-suggests:rework bot-suggests:close \
+         bot-suggests:showcase bot-suggests:addon bot-suggests:theme needs-maintainer p0 p1 p2 p3; do
   gh label create "$l" -R OWNER/NAME --force
 done
 ```
 
-It then reviews each PR when it is opened, updated or marked ready. A maintainer can comment `/bot review`
-to run it again, and `workflow_dispatch` reviews every open PR, oldest first (a backfill).
+It then reviews each PR when it is opened, updated or marked ready, and every push again. A push that leaves the
+PR's own changes the same (a rebase, main merged in), or only touches Markdown on a code or list PR, is
+re-checked without a model call: the facts and the policy run again on the earlier judgement. Every 6 hours a
+sweep re-reviews any PR whose review is older than its head. A maintainer (owner, member or collaborator) can
+comment `/bot review` to run it again, and `workflow_dispatch` reviews every open PR, oldest first (a backfill).
 
 ## Safety model
 
@@ -77,8 +103,8 @@ to run it again, and `workflow_dispatch` reviews every open PR, oldest first (a 
 
 ## Cost
 
-About $0.05–0.10 per review with the defaults (decision and critic on `claude-opus-5.5`, second opinion on
-`glm-5.3-flash`, both through the 0G router). Caps:
+About $0.05 per review with the defaults (decision on `claude-opus-5.5`, critic on `claude-sonnet-5`, second
+opinion on `glm-5.3-flash`, all through the 0G router); a re-review with the same changes costs nothing. Caps:
 
 - `per-pr-cap-usd` (default $0.50): the most one review may spend
 - `daily-cap-usd` (default $5): reviewing stops for the day once reached; the ledger is kept in the Actions

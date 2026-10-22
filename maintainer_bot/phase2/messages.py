@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from .. import templates
 from ..live import _clean
 
 # a different marker from the phase-1 review ("<!-- maintainer-bot"), so the sticky lookup never finds these
@@ -64,6 +65,14 @@ def close(pr: int, reason: str) -> str:
     return "\n".join([f"{ACTION_MARK} close pr={pr} -->", body, "",
                       "Closing it for now. If something here is off, reply and a maintainer will reopen it.",
                       "", FOOTER])
+
+
+def elsewhere(pr: int, kind: str, *, specific: str, name: str, link: str) -> str:
+    """showcase / addon: a kind close that says where the idea lives instead; theme: a move to themes/."""
+    tail = ("Push the move to this branch when it's ready and the bot will take another look." if kind == "theme"
+            else "Closing this one here, with thanks. If something here is off, reply and a maintainer will reopen it.")
+    return "\n".join([f"{ACTION_MARK} {kind} pr={pr} -->", templates.render(kind, specific=specific, name=name, link=link),
+                      "", tail, "", FOOTER])
 
 
 def not_marked_merged(pr: int, bot_pr: int) -> str:
