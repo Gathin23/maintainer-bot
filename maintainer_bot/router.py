@@ -57,8 +57,11 @@ class ToolCallFailed(RuntimeError):
 
 
 def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger, max_tokens: int = 4000,
-              tag: str = "", retries: int = 6, timeout: int = 420) -> dict:
-    """Send one message and force a single tool call; returns the tool input. Costs go to the ledger."""
+              tag: str = "", retries: int = 3, timeout: int = 240, deadline_s: int = 900) -> dict:
+    """Send one message and force a single tool call; returns the tool input. Costs go to the ledger.
+
+    Paid retries are kept to a minimum: a refusal is final, an answer without the tool gets one more try,
+    and the whole call gives up after deadline_s seconds."""
     body = {
         "model": model,
         "max_tokens": max_tokens,
@@ -69,7 +72,10 @@ def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger,
     }
     headers = {"x-api-key": api_key(), "anthropic-version": "2023-06-01", "content-type": "application/json"}
     last = None
+    started, answered_without_tool = time.monotonic(), 0
     for attempt in range(retries):
+        if time.monotonic() - started > deadline_s:
+            raise ToolCallFailed(f"gave up after {deadline_s}s ({last or 'no answer'})")
         ledger.check()
         try:
             r = requests.post(f"{ROUTER}/v1/messages", headers=headers, data=json.dumps(body), timeout=timeout)
@@ -97,7 +103,14 @@ def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger,
         for block in d.get("content") or []:
             if block.get("type") == "tool_use" and block.get("name") == tool["name"]:
                 return block.get("input") or {}
-        last = f"no tool call (stop_reason={d.get('stop_reason')})"
-        if d.get("stop_reason") == "max_tokens":
+        stop = d.get("stop_reason")
+        last = f"no tool call (stop_reason={stop})"
+        if stop == "refusal":  # asking again costs the same and gets the same answer
+            raise ToolCallFailed("the model declined to review this one")
+        if stop == "max_tokens":
             body["max_tokens"] = min(int(body["max_tokens"] * 2), 16000)
+        else:
+            answered_without_tool += 1
+            if answered_without_tool > 1:
+                raise ToolCallFailed(last)
     raise ToolCallFailed(last or "unknown error")
