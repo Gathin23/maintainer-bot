@@ -72,6 +72,14 @@ class CoreFactsTest(unittest.TestCase):
         self.assertEqual(v, "rework")
         self.assertIn("rebase", fix)
 
+    def test_a_rework_on_a_bigger_launcher_change_goes_to_the_maintainer(self):
+        big = fx_of([f(MAIN, "+x\n" * 150)])
+        self.assertEqual(v4.final(res("rework", 0.8), big)[0], "hold")
+        self.assertEqual(v4.final(res("showcase", 0.8), big)[0], "showcase")
+        self.assertEqual(v4.final(res("rework", 0.8), big, {"big_core_rework_lines": None})[0], "rework")
+        small = fx_of([f(MAIN, "+x\n" * 20)])
+        self.assertEqual(v4.final(res("rework", 0.8), small)[0], "rework")
+
     def test_tests_and_translations_do_not_count_as_core_lines(self):
         fx = fx_of([f("launcher/app/src/test/java/com/gathin/tvhome/XTest.java", "+t\n" * 400),
                     f("launcher/app/src/main/res/values-ru/strings.xml", "+s\n" * 300)])

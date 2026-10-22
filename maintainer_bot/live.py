@@ -469,8 +469,9 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
     same_commit = bool(sticky_sha) and snap["head_sha"].startswith(sticky_sha)
     if refresh and not before.get("m"):
         return {**result, "skipped": "no stored review to refresh"}
-    if not force and not refresh and same_commit:
+    if not force and not refresh and same_commit and before.get("m"):
         return {**result, "skipped": "already reviewed at this commit"}
+    # a review from v1 (no stored judgement) is done again once, so the queue only holds v4 reviews
 
     paths = [f["path"] for f in snap["files"]]
     skip = sorted({p for p in paths for s in SKIP_PATHS if p.startswith(s)})

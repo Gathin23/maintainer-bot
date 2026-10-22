@@ -50,9 +50,27 @@ class LiveTest(unittest.TestCase):
         return live.review("o/r", 7, **kw), fake
 
     def test_skips_unchanged_commit(self):
-        r, fake = self._run(snap(["examples/acme/debloat.txt"]), sticky="<!-- maintainer-bot sha=abcdef123456 v=1 -->")
+        sticky = "<!-- maintainer-bot sha=abcdef123456 v=2 -->\n" + live.write_data({"m": "merge", "diff": "x"})
+        r, fake = self._run(snap(["examples/acme/debloat.txt"]), sticky=sticky)
         self.assertIn("already reviewed", r["skipped"])
         self.assertEqual(fake.writes, [])
+
+    def test_a_v1_review_is_done_again_once(self):
+        orig = live.repo_context
+        live.repo_context = lambda gh, b: {"list_folders": set(), "locales": []}
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                from datetime import datetime, timezone
+                day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                with open(os.path.join(d, f"ledger-{day}.jsonl"), "w") as f:
+                    f.write('{"model":"m","in":1,"out":1,"usd":6.0}\n')
+                r, fake = self._run(snap(["examples/acme/debloat.txt"]),
+                                    sticky="<!-- maintainer-bot sha=abcdef123456 v=1 -->",
+                                    ledger_path=os.path.join(d, "ledger.jsonl"), daily_cap=5.0, rules_md="",
+                                    precedents="")
+        finally:
+            live.repo_context = orig
+        self.assertIn("daily cap", r["skipped"])  # it got as far as the model (stopped by the cap here)
 
     def test_config_paths_only_get_a_maintainer_comment(self):
         r, fake = self._run(snap([".github/workflows/ci.yml", "README.md"]))

@@ -239,6 +239,9 @@ POLICY = {
     "core_max_lines": 220,          # launcher lines (code, not tests or translations) a "small switch" may change
     "strings_fix_max_missing": 2,   # strings missing in at most this many locales: fill them in on merge
     "dns_rule": "fix",              # Private DNS setup in a list folder: "fix" (drop it on merge) or "rework"
+    # a rework the model asks for on a bigger launcher change goes to the maintainer instead (rework or showcase?):
+    # chosen after the test split, where 9 of 13 such reworks were PRs Gathin sent to the showcase or addons/
+    "big_core_rework_lines": 100,
     "use_critic": True,
     "use_second": True,
 }
@@ -364,6 +367,10 @@ def final(res: dict, fx: dict, policy: dict | None = None) -> tuple[str, str, st
     forced, why = gate(v, fx, res.get("confidence", 0), p)
     if forced:
         return forced, why, (why if forced == "rework" else "")
+    if v == "rework" and p["big_core_rework_lines"] is not None \
+            and fx.get("core_lines_changed", 0) > p["big_core_rework_lines"]:
+        return "hold", (f"a bigger launcher change ({fx['core_lines_changed']} lines) the bot would send back: "
+                        "rework or a home in the showcase/addons is the maintainer's call"), ""
     if fx.get("addon_touches_launcher") and v in ACCEPT:
         return "rework", "an add-on never touches launcher/: please keep it to addons/<name>/", ""
     threshold = p["core_merge_threshold"] if v in ACCEPT and fx.get("core_lines_changed") else p["threshold"]
