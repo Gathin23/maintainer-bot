@@ -179,6 +179,7 @@ class LiveTest(unittest.TestCase):
             live.ci_facts = orig
         self.assertEqual(r["verdict"], "rework")
         self.assertIn("CI fails", r["comment"])
+        self.assertNotIn("Thanks!", r["comment"].split("**What would help")[0])  # the merge wording is gone
         self.assertIn("after CI finished", r["comment"])
         r2, _ = self._run(s, sticky="<!-- maintainer-bot sha=abcdef123456 v=1 -->", refresh=True)
         self.assertIn("no stored review", r2["skipped"])

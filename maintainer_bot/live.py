@@ -545,6 +545,11 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
     reason = res.get("comment") or ""
     if not reason or ACTED.search(reason):  # the note must never claim something already happened
         reason = "; ".join(res.get("reasons") or []) or reason
+    if verdict != res["verdict"] and verdict != "hold":
+        # a rule changed the model's verdict (merge -> rework or merge-with-fix): its words ("ready to merge as it
+        # is") would contradict the suggestion, so open with the thanks only
+        spec = templates._specific(res.get("specific", ""))
+        reason = f"Thank you for this, {spec}!" if spec else "Thanks for the PR!"
     fix = res.get("fix", "") if verdict in ("merge-with-fix", "rework") and res["verdict"] == verdict else ""
     if verdict == "rework" and res["verdict"] != "rework" and why:
         fix = why  # a deterministic rule turned the verdict into a rework: that rule is the ask
@@ -556,7 +561,8 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
                                      link=templates.where_link(repo, branch))
     data = {"m": res["verdict"], "c": round(float(res.get("confidence") or 0), 2),
             "crit": int(bool((res.get("critic") or {}).get("blocker"))), "sec": (res.get("second") or {}).get("verdict"),
-            "diff": dh, "p": priority, "reason": _clean(reason, 400), "fix": _clean(res.get("fix", ""), 300),
+            "diff": dh, "p": priority, "reason": _clean(res.get("comment") or reason, 400),
+            "fix": _clean(res.get("fix", ""), 300),
             "specific": _clean(res.get("specific", ""), 140), "final": verdict}
     body = render(snap, verdict=verdict, model_verdict=res["verdict"], priority=priority, reason=reason,
                   fix=fix, why_held=why, fx=fx, ptype=ptype, cost=cost, elsewhere=elsewhere, data=data, note=note)
