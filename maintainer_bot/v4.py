@@ -250,8 +250,23 @@ POLICY = {
 }
 
 
-def rebase_ask(fx: dict) -> str:
+# the tables every list/showcase PR adds a row to; they are always union-merged on merge, so a conflict that is
+# only in them is resolved then and never needs a rebase
+UNION_FILES = {"README.md", "examples/README.md", "SHOWCASE.md"}
+
+
+def table_conflict_only(fx: dict) -> bool:
     files = [f for f in (fx.get("conflict_files") or []) if isinstance(f, str)]
+    return bool(fx.get("conflicts_with_main")) and bool(files) and all(f in UNION_FILES for f in files)
+
+
+def code_conflict(fx: dict) -> bool:
+    """A conflict that needs a rebase: in any file other than the union-merged tables (or files unknown)."""
+    return bool(fx.get("conflicts_with_main")) and not table_conflict_only(fx)
+
+
+def rebase_ask(fx: dict) -> str:
+    files = [f for f in (fx.get("conflict_files") or []) if isinstance(f, str) and f not in UNION_FILES]
     where = (" in " + ", ".join(f"`{f}`" for f in files[:5]) + (" and more" if len(files) > 5 else "")) if files else ""
     return f"please rebase onto main: it conflicts with main{where}"
 
@@ -328,8 +343,8 @@ def gate(v: str, fx: dict, confidence: float, policy: dict) -> tuple[str | None,
     if missing and len(missing) > p["strings_fix_max_missing"]:
         return "rework", (f"the new strings are missing in {len(missing)} of {fx.get('locales_on_main', '?')} "
                           "locales; add them to every locale (or keep the switch config-only, with no settings row)")
-    if fx.get("conflicts_with_main"):
-        return "rework", "it conflicts with main; please rebase onto main (keep both sides where they touch)"
+    if code_conflict(fx):
+        return "rework", rebase_ask(fx)
     # lists
     if fx.get("uninstall_steps"):
         return "rework", ("keep the folder to disabling only: please drop the `pm uninstall` steps ("
@@ -401,8 +416,8 @@ def final(res: dict, fx: dict, policy: dict | None = None) -> tuple[str, str, st
     why = always_maintainer(fx)
     if why:
         return "hold", why, ""
-    if fx.get("conflicts_with_main") and not (v in ("close", "showcase", "addon")
-                                              and res.get("confidence", 0) >= p["threshold"]):
+    if code_conflict(fx) and not (v in ("close", "showcase", "addon")
+                                  and res.get("confidence", 0) >= p["threshold"]):
         ask = rebase_ask(fx)
         return "rework", ask, ask
     if v == "addon" and fx.get("addon_folders"):

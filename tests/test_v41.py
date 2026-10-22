@@ -46,14 +46,33 @@ class AddonsTest(unittest.TestCase):
 class RebaseTest(unittest.TestCase):
     def test_conflicts_are_a_rebase_ask_whatever_the_model_says(self):
         fx = fx_of([f("examples/a/debloat.txt", "+com.a.ads\n")], conflicts_with_main=True)
-        fx["conflict_files"] = ["README.md", "examples/README.md"]
+        fx["conflict_files"] = ["README.md", "examples/a/debloat.txt"]
         for verdict, conf in (("merge", 0.95), ("merge", 0.3), ("hold", 0.0), ("rework", 0.5)):
             v, why, fix = v4.final(res(verdict, conf), fx)
             self.assertEqual(v, "rework", verdict)
             self.assertIn("rebase onto main", fix)
-            self.assertIn("`README.md`", fix)
-            self.assertIn("`examples/README.md`", fix)
+            self.assertIn("`examples/a/debloat.txt`", fix)
         self.assertEqual(v4.final(res("close", 0.9), fx)[0], "close")  # closing anyway: no rebase ask
+
+    def test_a_conflict_only_in_the_union_tables_is_resolved_on_merge(self):
+        for files in (["README.md"], ["examples/README.md", "SHOWCASE.md"]):
+            fx = fx_of([f("examples/a/debloat.txt", "+com.a.ads\n")], conflicts_with_main=True)
+            fx["conflict_files"] = files
+            self.assertEqual(v4.final(res("merge", 0.9), fx)[0], "merge", files)
+            self.assertEqual(v4.final(res("merge", 0.5), fx)[0], "hold")  # no verdict change: the usual bars
+            self.assertEqual(v4.final(res("merge-with-fix", 0.9), fx)[0], "merge-with-fix")
+            s = snap(["examples/a/debloat.txt"] + files)
+            body = live.render(s, verdict="merge", model_verdict="merge", priority="p2", reason="Thanks!", fix="",
+                               why_held="", fx=fx, ptype="tv-list", cost=0)
+            self.assertIn("no need to rebase", body)
+            self.assertNotIn("please rebase", body)
+        # a table plus any other file: the rebase ask stays, and names the other file
+        fx = fx_of([f("examples/a/debloat.txt", "+com.a.ads\n")], conflicts_with_main=True)
+        fx["conflict_files"] = ["README.md", "examples/a/debloat.txt"]
+        v, why, fix = v4.final(res("merge", 0.9), fx)
+        self.assertEqual(v, "rework")
+        self.assertIn("`examples/a/debloat.txt`", fix)
+        self.assertNotIn("`README.md`", fix)
 
     def test_unknown_files_still_ask(self):
         fx = fx_of([f("tools/theme.sh", "+x\n")], conflicts_with_main=True)
