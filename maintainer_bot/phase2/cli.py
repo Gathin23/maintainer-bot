@@ -74,8 +74,9 @@ def on_comment(repo: str, event_path: str, *, allow: str = "", workdir: str = ""
     return Executor(api, cfg).run(issue["number"], cmds)
 
 
-# what a counts patch may change, and in tools/readme_stats.py only the STATS line
-COUNTS_OUTPUTS = ("README.md", "tools/readme_stats.py", "docs/stats.png", "docs/card.jpg")
+# what a counts patch may change (the generated TV tables are in the two READMEs), and in tools/readme_stats.py
+# only the STATS line
+COUNTS_OUTPUTS = ("README.md", "examples/README.md", "tools/readme_stats.py", "docs/stats.png", "docs/card.jpg")
 
 
 def check_counts_patch(patch: str) -> str:

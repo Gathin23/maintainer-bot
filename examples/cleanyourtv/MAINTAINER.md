@@ -1,7 +1,7 @@
 # How CleanYourTV PRs are reviewed
 
 CleanYourTV (Gathin23/cleanyourtv) is a prompt plus tools that debloat Android TV / Google TV / Fire TV over
-ADB and a tiny native launcher (`launcher/`, plain Java, ~471 KB, for 1 GB TVs). Contributors mostly add
+ADB and a tiny native launcher (`launcher/`, plain Java, ~497 KB, for 1 GB TVs). Contributors mostly add
 tested TV lists under `examples/<tv>/`, translations, docs, small launcher options, themes, add-ons and tools.
 
 ## The policy: a small core plus a well-indexed hub
@@ -30,7 +30,7 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
 
 ## Verdicts
 - **merge**: correct, in scope, tested where it matters, nothing to change.
-- **merge-with-fix**: a small mechanical change makes it mergeable (add the README/examples row, a string missing
+- **merge-with-fix**: a small mechanical change makes it mergeable (add a missing `tv.json`, a string missing
   in one or two locales, drop a stray file, comment out an untested entry, trim a SHOWCASE cell to one line).
   Say exactly what to change in `fix`.
 - **rework**: worth having but the author must change something real. One clear ask.
@@ -61,7 +61,12 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
   can be its own folder (#653, #768). It is a judgement call: set confidence accordingly.
 - Edits to a list already on main (second units, notes, corrections) are judgement calls; decide only when the
   change is clearly right.
-- A new list needs its row in README and examples/README (missing → merge-with-fix: add the rows).
+- A new list needs `examples/<folder>/tv.json` (missing → merge-with-fix: add it). The TV tables in README and
+  examples/README, the brand line and the counts are generated from those files: a list PR never needs README rows,
+  and rows an older PR added are dropped on merge (`tools/gen_tables.py --adopt` turns them into its `tv.json`).
+- After merging lists, the maintainer runs `python3 tools/gen_tables.py` on main and commits what it rewrites
+  (with `--font Fredoka.ttf` it also redraws the card when a count changed); CI's "README tables" job on main
+  stays red until then, and only that job.
 - `pm hide`/`pm block` needs the matching unhide/unblock undo in the header.
 
 ## Scope and taste
@@ -76,7 +81,8 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
 - A PR that bundles several good, separable parts gets **rework**: split it (list each part). A device's list plus
   small fixes for that same device can be one PR. A list bundled inside a launcher feature PR goes as its own PR.
 - A PR that conflicts with main gets a kind rebase request (**rework**) naming the conflicting files, whatever
-  else is true of it (approved 22 Oct).
+  else is true of it (approved 22 Oct). A conflict only in README.md, examples/README.md or SHOWCASE.md is not
+  one: the TV tables are regenerated on merge and SHOWCASE.md is union-merged, so no rebase is needed.
 - Duplicates: when an earlier open PR, or a PR merged in the last week, fixes the same issue in the same files
   (or adds mostly the same lines), the later PR is the duplicate: **close** it and name the other one (#873 after
   #842, #947 after #924). A stacked series (one PR built on another) is not a duplicate.
@@ -85,7 +91,7 @@ it, and every one of them gets a home. Pick the smallest home that fits (CONTRIB
   prebuilt binary. An add-on that duplicates an existing one (same source, same card) folds into it (#972).
 - Files nothing links to (screenshots, stray root files, unrelated build changes) are dropped on merge.
 - Press and coverage rows need a source that could be opened and checked; leave out what can't be verified.
-- Docs and README must stay in step: a new list needs its row in README and examples/README.
+- Docs and README must stay in step: a new list needs its `tv.json` (the README rows come from it).
 
 ## Comment style
 Short, human, thankful: name one specific thing that is good about the PR. Name what changes on merge. Rework

@@ -1,7 +1,8 @@
+import json
 import os
 import unittest
 
-from maintainer_bot.phase2 import commands, fixer, gitops, messages, queue as q, sticky
+from maintainer_bot.phase2 import commands, fixer, gitops, messages, queue as q, sticky, tables
 from maintainer_bot.phase2.executor import Config, Executor
 from maintainer_bot.phase2.cli import on_comment
 from tests.fake_github import FakeApi, sticky_body
@@ -318,15 +319,69 @@ class ConflictRules(unittest.TestCase):
         out, notes = gitops.resolve_text(text)
         self.assertEqual(out, "| T |\n| A main |\n| B pr |\nend")
 
-    def test_count_lines_take_main(self):
-        text = ("<<<<<<< HEAD\n**TCL** 41 · **Sony** 22 ·\n=======\n**TCL** 40 · **Sony** 23 ·\n>>>>>>> m\n")
-        out, _ = gitops.resolve_text(text)
-        self.assertIn("**TCL** 40 · **Sony** 23 ·", out)
-        self.assertNotIn("41", out)
+    def test_the_generated_readmes_are_rebuilt_and_showcase_keeps_both(self):
+        # README.md and examples/README.md are neither union-merged nor plain "main's version": carry() keeps the
+        # PR's hand-written edits and main's generated sections
+        self.assertEqual(tables.GENERATED, ("README.md", "examples/README.md"))
+        self.assertFalse(set(tables.GENERATED) & set(gitops.REGENERATED))
+        self.assertEqual(gitops.TABLE_FILES, ("SHOWCASE.md",))
 
     def test_prose_conflict_gives_up(self):
         out, _ = gitops.resolve_text("<<<<<<< HEAD\nSome text\n=======\nOther text\n>>>>>>> m\n")
         self.assertIsNone(out)
+
+
+class RowsToTvJson(unittest.TestCase):
+    """An older list PR's rows in the generated README tables become its examples/<folder>/tv.json."""
+
+    DIFF = "\n".join([
+        "diff --git a/README.md b/README.md", "--- a/README.md", "+++ b/README.md", "@@ -1,3 +1,4 @@",
+        " | Sony A | Android 9 |", "+| TCL 55L8 (China) | Android 9 (CN build) |", "-Sony · Xiaomi ·",
+        "+Sony · TCL · Xiaomi ·",
+        "diff --git a/examples/README.md b/examples/README.md", "--- a/examples/README.md", "+++ b/examples/README.md",
+        "+| `tcl-55l8/` | TCL 55L8 (China) | Android 9 | Huan ads off |",
+        "+| `hartens-x/` | Hartens X (YaOS) | Android 9 | Yandex rows off |",
+        "-| `sony-a/` | Sony A | Android 9 | x |", "+| `sony-a/` | Sony A | Android 9 | x; second unit |",
+        "+| `gone-z/` | Gone Z | Android 9 | a folder that is not there |"])
+    EXISTING = {"sony-a": {"tv": "Sony A", "os": "Android 9", "brand": "Sony", "notes": "x"},
+                "tcl-b": {"tv": "TCL B", "os": "Android 11", "brand": "TCL", "notes": "y"}}
+    FOLDERS = {"sony-a", "tcl-b", "tcl-55l8", "hartens-x"}
+
+    def test_new_folders_edited_rows_and_brands(self):
+        writes, notes, problems = tables.from_rows(self.DIFF, self.EXISTING, self.FOLDERS)
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(writes), ["examples/hartens-x/tv.json", "examples/sony-a/tv.json",
+                                          "examples/tcl-55l8/tv.json"])
+        self.assertEqual(json.loads(writes["examples/tcl-55l8/tv.json"]),
+                         {"tv": "TCL 55L8 (China)", "os": "Android 9", "brand": "TCL", "notes": "Huan ads off",
+                          "readme_os": "Android 9 (CN build)"})
+        self.assertEqual(json.loads(writes["examples/hartens-x/tv.json"])["brand"], "Hartens")
+        self.assertTrue(any("Hartens (new brand)" in n for n in notes))
+        self.assertEqual(json.loads(writes["examples/sony-a/tv.json"])["notes"], "x; second unit")
+
+    def test_a_row_main_changed_since_is_a_problem(self):
+        existing = {**self.EXISTING, "sony-a": {**self.EXISTING["sony-a"], "notes": "x; changed on main"}}
+        writes, _, problems = tables.from_rows(self.DIFF, existing, self.FOLDERS)
+        self.assertNotIn("examples/sony-a/tv.json", writes)
+        self.assertEqual(problems, ["examples/sony-a/tv.json: the row this PR edits has changed on main since"])
+
+    def test_touches_sections(self):
+        self.assertTrue(tables.touches_sections(self.DIFF))
+        self.assertTrue(tables.touches_sections("+Hitachi · Sony · Xiaomi ·"))
+        self.assertTrue(tables.touches_sections("+Anker Nebula, Epson and XGIMI projectors"))
+        self.assertTrue(tables.touches_sections(None))  # no patch from the API: can't tell, so the safe path
+        self.assertFalse(tables.touches_sections("-| **Built something on top?** | eighty-one projects |\n"
+                                                 "+| **Built something on top?** | eighty-two projects |"))
+        self.assertFalse(tables.touches_sections("+- [Xiaomi 3S](../docs/devices/x.md): input notes"))
+
+    def test_with_sections_of_main(self):
+        old = "# R\n\nTested lists from contributors:\n\n**TCL** 2 ·\nSony ·\n\n| TV | OS |\n|---|---|\n| A | 9 |\n\nEnd\n"
+        main = ("# R\n\nTested lists from contributors:\n\n<!-- tv-brands:start: g -->\n\n**TCL** 3 ·\n\n"
+                "<!-- tv-brands:end -->\n\n<!-- tv-table:start: g -->\n\n| TV | OS |\n|---|---|\n| A | 9 |\n| B | 9 |\n\n"
+                "<!-- tv-table:end -->\n\nEnd, edited on main\n")
+        out = tables.with_sections_of(old, "README.md", main)
+        self.assertEqual(out, main.replace("End, edited on main", "End"))
+        self.assertIsNone(tables.with_sections_of("# no tables\n", "README.md", main))
 
 
 class Messages(unittest.TestCase):

@@ -250,8 +250,9 @@ POLICY = {
 }
 
 
-# the tables every list/showcase PR adds a row to; they are always union-merged on merge, so a conflict that is
-# only in them is resolved then and never needs a rebase
+# the tables every list/showcase PR adds a row to: on merge the README TV tables are regenerated (the PR's rows
+# move into its tv.json) and SHOWCASE.md is union-merged, so a conflict that is only in them is resolved then and
+# never needs a rebase
 UNION_FILES = {"README.md", "examples/README.md", "SHOWCASE.md"}
 
 
@@ -546,8 +547,8 @@ def conflicts(git_dir: str, main_commit: str, head: str) -> list[str] | bool:
 
 
 def blocking_conflicts(c) -> bool:
-    """A conflict only in the shared tables (README rows) is resolved mechanically on merge; anything else needs
-    a rebase. True means "unknown files" (the API's mergeable=false)."""
+    """A conflict only in the shared tables (README rows) is resolved mechanically on merge (the TV tables are
+    regenerated); anything else needs a rebase. True means "unknown files" (the API's mergeable=false)."""
     if c is True:
         return True
     return bool(c) and any(f not in TABLE_FILES for f in c)

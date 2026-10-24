@@ -6,7 +6,9 @@ CHECKLISTS = {
 - Not a duplicate: the folder or the same model/firmware is not already on main or in another open PR
   (if it is: close, or fold the notes into the existing list).
 - Disables, never uninstalls; no protected packages (TV/input/tuner, keyboard, Bluetooth, Play Store/Services).
-- The README TV table and examples/README rows are added (if missing → merge-with-fix: add the rows).
+- The folder has a tv.json (tv, os, brand, notes): the README TV tables are generated from it, so a list PR
+  never needs README rows, and rows an older PR added move into its tv.json on merge
+  (if tv.json is missing → merge-with-fix: add examples/<folder>/tv.json).
 - A device report without a list, or a list never run on the TV, is weaker: hold only if it changes rules.""",
     "docs": """- Accurate and consistent with the current README/PROMPT; no claims the repo can't back.
 - Does not change the prompt's safety rules (that needs the maintainer → hold).

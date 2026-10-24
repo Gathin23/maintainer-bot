@@ -410,7 +410,7 @@ def checks(fx: dict, ptype: str) -> list[str]:
         files = fx.get("conflict_files") or []
         if v4.table_conflict_only(fx):
             out.append(f"**{ok}**: only a README table conflicts with main (`" + "`, `".join(files) +
-                       "`); it is resolved on merge, no rebase needed")
+                       "`); the tables are regenerated on merge, no rebase needed")
         else:
             out.append(f"**{note}**: conflicts with main" + (": `" + "`, `".join(files[:5]) + "`" if files else ""))
     for d in (fx.get("possible_duplicates") or [])[:3]:
@@ -471,8 +471,8 @@ def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reaso
         lines += ["", "Possibly related: " + "; ".join(f"#{d['pr']} ({_clean(d['why'], 120)})" for d in weak[:3])
                   + ". Worth a look before merging both."]
     if v4.table_conflict_only(fx) and verdict != "rework":
-        lines += ["", "The only conflict with main is a README table row; that is resolved on merge, so there is "
-                  "no need to rebase."]
+        lines += ["", "The only conflict with main is a README table row; the tables are regenerated on merge, so "
+                  "there is no need to rebase."]
     if note:
         lines += ["", f"_{_clean(note, 200)}_"]
     lines += ["", "<details><summary>Checks</summary>", ""]

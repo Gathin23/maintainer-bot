@@ -13,13 +13,16 @@ from .. import fix as fix_mod
 
 MAX_CHANGED_LINES = fix_mod.MAX_CHANGED_LINES
 SENSITIVE = fix_mod.SENSITIVE + (".opencodereview/",)
+# A list's row in CleanYourTV's generated README tables lives in examples/<folder>/tv.json; a fix that adds one
+# is shown this one as the format to copy.
+TV_JSON_EXAMPLE = "examples/xiaomi-mi-tv-4a/tv.json"
 
 Reader = Callable[[str], "str | None"]
 
 
 def needles(fix_text: str, paths: list[str]) -> list[str]:
     """Words worth finding in big files: backticked and quoted bits, folder names and their brand word
-    (a missing README row has no folder name to find, but its neighbours share the brand)."""
+    (a row has no folder name to find, but its neighbours share the brand)."""
     out = re.findall(r"`([^`]{3,80})`", fix_text) + re.findall(r"\"([^\"]{3,80})\"", fix_text)
     slugs = re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b", fix_text)
     for p in paths:
@@ -36,7 +39,10 @@ def needles(fix_text: str, paths: list[str]) -> list[str]:
 def context(read: Reader, fix_text: str, paths: list[str], limit_files: int = 6) -> dict[str, str]:
     mentioned = re.findall(r"[\w./-]+\.(?:md|txt|json|py|sh|xml|kt|java)\b", fix_text)
     if any(not m.startswith("examples/") for m in re.findall(r"\S*README\b(?!\.md)", fix_text)):
-        mentioned.append("README.md")  # "the README's main TV table" means the top-level README
+        mentioned.append("README.md")  # "the README's ..." means the top-level README
+    if "tv.json" in fix_text:  # the list's row for the generated tables: its folder's tv.json and one to copy
+        mentioned += [f"examples/{m.group(1)}/tv.json" for m in map(re.compile(r"^examples/([^/]+)/").match, paths) if m]
+        mentioned.append(TV_JSON_EXAMPLE)
     want = list(dict.fromkeys([p for p in paths if not p.endswith((".png", ".jpg", ".jpeg", ".webp"))] + mentioned))
     words = needles(fix_text, paths)
     out = {}

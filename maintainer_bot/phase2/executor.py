@@ -15,7 +15,7 @@ from typing import Callable
 
 from ..ledger import BudgetExceeded
 from ..live import MARKER, SKIP_PATHS
-from . import fixer, gate, messages, queue as queue_mod, sticky
+from . import fixer, gate, messages, queue as queue_mod, sticky, tables
 from .commands import Commands
 from .gitops import Git, GitError
 
@@ -42,7 +42,9 @@ class Config:
     ci_timeout: float = 40 * 60
     poll: float = 30
     sleep: Callable[[float], None] = time.sleep
-    ignore_checks: tuple[str, ...] = ("review",)
+    # "README tables": CleanYourTV's main-only check that the generated TV tables are current. It is red from a
+    # list merge until the counts step regenerates them after the wave, so it says nothing about the wave.
+    ignore_checks: tuple[str, ...] = ("review", "README tables")
     where_link: str = ""                      # the repo's "Where does my idea go?" table, for showcase/addon/theme
     max_fix_lines: int = fixer.MAX_CHANGED_LINES
     max_wave: int = 25                        # most PRs one /approve acts on; the next /approve picks up the rest
@@ -227,9 +229,13 @@ class Executor:
         if touchy:
             return Outcome(n, action, "skipped", f"changes {touchy[0]}: maintainer only")
         if action == "merge-with-fix":
-            # its own CI is often red for exactly the thing the fix repairs (a missing README row);
+            # its own CI is often red for exactly the thing the fix repairs (a missing tv.json);
             # the gate is CI on the bot branch, which runs on PR head + fix before anything merges
             return self.bot_branch(n, pr, paths, fix_text=review["fix"], reason="")
+        if any(f["filename"] in tables.GENERATED and tables.touches_sections(f.get("patch"))
+               for f in self.api.pr_files(n)):
+            # an older list PR with rows in the generated README tables: they move into its tv.json on a bot branch
+            return self.bot_branch(n, pr, paths, fix_text="", reason="its README table rows move into tv.json")
         c = self.api.checks(pr["head_sha"], ignore=self.cfg.ignore_checks)
         if c["state"] == "pending":
             return Outcome(n, action, "skipped", "checks still running or waiting for approval: "

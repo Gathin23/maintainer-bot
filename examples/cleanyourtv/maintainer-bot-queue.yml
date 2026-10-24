@@ -3,17 +3,18 @@
 # 09:17 IST every day: one issue "Today's queue YYYY-MM-DD" built from the phase-1 reviews (no model calls).
 # The owner comments /approve (or /approve except #a, /skip #n, /close #n reason, /rework #n ask) on that issue,
 # and the bot does the work: merges (small fixes go through a bot/merge-<n> PR and CI first), thank-you
-# comments, rework asks, kind closes, then one "README counts after today's merges" PR.
+# comments, rework asks, kind closes, then one "README counts after today's merges" PR (the TV tables, brand
+# line and counts, regenerated from examples/*/tv.json).
 #
 # Safety: nothing here runs on pull requests, so no PR code ever runs with these secrets. Commands are read
 # only from the repo owner (and MAINTAINER_BOT_ALLOW_USERS), only on issues labelled maintainer-queue.
 # The bot never pushes to main: it pushes bot/* branches and merges through PRs that need green CI.
-# A wave (one /approve) only acts on lists, docs, themes, SHOWCASE.md, README table rows and launcher
-# translations; launcher code, addons/, tools/, PROMPT.md, scripts and workflows stay for the owner. It starts only
+# A wave (one /approve) only acts on lists, docs, themes, SHOWCASE.md, README table rows (moved into the list's
+# tv.json on merge) and launcher translations; launcher code, addons/, tools/, PROMPT.md, scripts and workflows stay for the owner. It starts only
 # when main's CI is green, waits for main's CI again every few merges, and acts on at most
 # MAINTAINER_BOT_MAX_WAVE PRs (default 25).
-# The README counts run the repo's own tools (tools/readme_stats.py, tools/readme_card.py), so they get a job of
-# their own with no secrets and no token at all; a third job, which runs no repo code, checks the patch they made
+# The README tables and counts run the repo's own tools (tools/gen_tables.py, which calls readme_stats.py and
+# readme_card.py), so they get a job of their own with no secrets and no token at all; a third job, which runs no repo code, checks the patch they made
 # (counts files only) and opens the counts PR with an App token cut down to contents and pull requests.
 # Identity: a GitHub App (MAINTAINER_BOT_CLIENT_ID + MAINTAINER_BOT_PRIVATE_KEY) or, as a fallback, a
 # fine-grained token (MAINTAINER_BOT_TOKEN); the workflow's own GITHUB_TOKEN can't trigger CI on bot branches.
@@ -109,7 +110,8 @@ jobs:
           counts-note: "README counts: a separate job redraws them and opens \"README counts after today's merges\"."
 
   counts:
-    # Runs the repo's counts tools with no secrets and no token: checkout without credentials, contents read only.
+    # Runs the repo's tools/gen_tables.py (tables, brand line, counts, card) with no secrets and no token:
+    # checkout without credentials, contents read only.
     needs: act
     if: needs.act.outputs.merged != ''
     runs-on: ubuntu-latest

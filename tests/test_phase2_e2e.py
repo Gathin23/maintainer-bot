@@ -1,12 +1,15 @@
 """End-to-end simulation of one /approve batch: a real bare git repo plays the GitHub remote, FakeApi plays the
 REST API (merges really happen in the bare repo), and a fake model proposes the small fix.
 
-Batch: 3 merges (one of which no longer merges cleanly after the first and goes through a bot branch with the
-table rows kept from both sides), 1 merge with a fix, 1 rework, 1 close, 1 held PR left alone, then the README
-counts PR. A pre-receive hook in the bare repo rejects any push to main that isn't a "GitHub" merge, which proves
+The fake repo is a small CleanYourTV: its TV tables are generated from examples/*/tv.json by a copy of the repo's
+tools/gen_tables.py. Batch: 3 merges (two lists that add only their folder and tv.json, and one older list PR
+whose rows in the README tables move into its tv.json on a bot branch), 1 merge with a fix (the fix adds the
+missing tv.json), 1 rework, 1 close, 1 held PR left alone, then the README counts PR that regenerates the tables. A pre-receive hook in the bare repo rejects any push to main that isn't a "GitHub" merge, which proves
 the bot never pushes to the default branch itself.
 """
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +25,7 @@ from tests.fake_github import FakeApi
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COUNTS = os.path.join(os.path.dirname(HERE), "examples", "cleanyourtv", "update_counts.py")
+GEN_TABLES = os.path.join(HERE, "fixtures", "cleanyourtv_gen_tables.py")
 
 README = textwrap.dedent("""\
     # Mini
@@ -30,18 +34,14 @@ README = textwrap.dedent("""\
 
     Tested lists from contributors, one folder per model in [`examples/`](examples/):
 
-    **TCL** 2 ·
-    Sony · Xiaomi ·
+    <!-- tv-brands:start: generated -->
+    <!-- tv-brands:end -->
 
     <details>
     <summary>The full list</summary>
 
-    | TV | OS |
-    |---|---|
-    | Sony A | Android 9 |
-    | TCL B | Android 11 |
-    | TCL D | Android 11 |
-    | Xiaomi F | Android 9 |
+    <!-- tv-table:start: generated -->
+    <!-- tv-table:end -->
 
     </details>
 
@@ -50,18 +50,30 @@ README = textwrap.dedent("""\
     | Feature | |
     |---|---|
     | **2 languages** | Follows the TV's language |
+
+    | You have | |
+    |---|---|
+    | **Built something on top?** | Add it to SHOWCASE.md, where two projects live. |
     """)
 
 EXAMPLES = textwrap.dedent("""\
     # Examples
 
-    | Folder | TV | OS | Notes |
-    |---|---|---|---|
-    | `sony-a/` | Sony A | Android 9 | x |
-    | `tcl-b/` | TCL B | Android 11 | x |
-    | `tcl-d/` | TCL D | Android 11 | x |
-    | `xiaomi-f/` | Xiaomi F | Android 9 | x |
+    <!-- tv-table:start: generated -->
+    <!-- tv-table:end -->
+
+    Notes for models that have no tested list yet:
+
+    - [Old K](../docs/devices/old-k.md): a one-day report
     """)
+
+
+def tv_json(tv, brand, os_="Android 11", notes="x"):
+    return json.dumps({"tv": tv, "os": os_, "brand": brand, "notes": notes}, indent=2) + "\n"
+
+
+SEED_LISTS = {"sony-a": ("Sony A", "Sony", "Android 9"), "tcl-b": ("TCL B", "TCL", "Android 11"),
+              "tcl-d": ("TCL D", "TCL", "Android 11"), "xiaomi-f": ("Xiaomi F", "Xiaomi", "Android 9")}
 
 STATS = 'STATS = [("4", "TV MODELS"), ("3", "BRANDS"), ("2", "LANGUAGES"), ("429 KB", "LAUNCHER")]\n'
 
@@ -109,11 +121,14 @@ class E2E(unittest.TestCase):
         sh(t, "init", "-q", "-b", "main", seed)
         write(seed, "README.md", README)
         write(seed, "examples/README.md", EXAMPLES)
-        for f in ("sony-a", "tcl-b", "tcl-d", "xiaomi-f"):
+        for f, (name, brand, os_) in SEED_LISTS.items():
             write(seed, f"examples/{f}/debloat.txt", f"# {f}\ncom.example.ads\n")
+            write(seed, f"examples/{f}/tv.json", tv_json(name, brand, os_))
         write(seed, "launcher/app/src/main/res/values/strings.xml", "<resources/>\n")
         write(seed, "launcher/app/src/main/res/values-de/strings.xml", "<resources/>\n")
         write(seed, "tools/readme_stats.py", STATS)
+        shutil.copy(GEN_TABLES, os.path.join(seed, "tools", "gen_tables.py"))
+        subprocess.run([sys.executable, "tools/gen_tables.py"], cwd=seed, check=True, capture_output=True)
         sh(seed, "add", "-A")
         sh(seed, "commit", "-q", "-m", "seed")
         sh(seed, "remote", "add", "origin", self.bare)
@@ -143,33 +158,33 @@ class E2E(unittest.TestCase):
         return sha
 
     def scenario(self):
-        top = "|---|---|\n| Sony A |"
-        ex_top = "|---|---|---|---|\n| `sony-a/`"
-        # three plain merges; #103 adds rows at the same spot as #101 and edits the same brand line
+        # two lists that add only their folder and tv.json: plain merges
         self.pr(101, "Add Hisense G list", [
             ("examples/hisense-g/debloat.txt", "# Hisense G\ncom.hisense.ads\n"),
-            ("README.md", top, "|---|---|\n| Hisense G | Android 11 |\n| Sony A |"),
-            ("README.md", "Sony · Xiaomi ·", "Hisense · Sony · Xiaomi ·"),
-            ("examples/README.md", ex_top, "|---|---|---|---|\n| `hisense-g/` | Hisense G | Android 11 | x |\n| `sony-a/`"),
+            ("examples/hisense-g/tv.json", tv_json("Hisense G", "Hisense")),
         ], verdict="merge", priority="p1")
         self.pr(102, "Add Vu Z list", [
             ("examples/vu-z/debloat.txt", "# Vu Z\ncom.vu.ads\n"),
-            ("README.md", "| Xiaomi F | Android 9 |", "| Xiaomi F | Android 9 |\n| Vu Z | Android 10 |"),
-            ("examples/README.md", "| `xiaomi-f/` | Xiaomi F | Android 9 | x |",
-             "| `xiaomi-f/` | Xiaomi F | Android 9 | x |\n| `vu-z/` | Vu Z | Android 10 | x |"),
+            ("examples/vu-z/tv.json", tv_json("Vu Z", "Vu", "Android 10")),
         ], verdict="merge")
+        # an older list PR: rows in both tables and the brand line, no tv.json
         self.pr(103, "Add Hitachi H list", [
             ("examples/hitachi-h/debloat.txt", "# Hitachi H\ncom.hitachi.ads\n"),
-            ("README.md", top, "|---|---|\n| Hitachi H | Android 9 |\n| Sony A |"),
+            ("README.md", "|---|---|\n| Sony A |", "|---|---|\n| Hitachi H | Android 9 |\n| Sony A |"),
             ("README.md", "Sony · Xiaomi ·", "Hitachi · Sony · Xiaomi ·"),
-            ("examples/README.md", ex_top, "|---|---|---|---|\n| `hitachi-h/` | Hitachi H | Android 9 | x |\n| `sony-a/`"),
+            ("examples/README.md", "|---|---|---|---|\n| `sony-a/`",
+             "|---|---|---|---|\n| `hitachi-h/` | Hitachi H | Android 9 | Hitachi ads off |\n| `sony-a/`"),
+            # a hand-written part of the same file, outside the generated table: kept
+            ("examples/README.md", "a one-day report\n", "a one-day report\n- [Hitachi K](../docs/devices/hk.md): notes\n"),
         ], verdict="merge")
-        # merge with a fix: the list forgot the README's main table row
-        self.pr(104, "Add TCL C list", [
-            ("examples/tcl-c/debloat.txt", "# TCL C\ncom.tcl.ads\n"),
-            ("examples/README.md", "| `tcl-b/` | TCL B | Android 11 | x |",
-             "| `tcl-b/` | TCL B | Android 11 | x |\n| `tcl-c/` | TCL C | Android 12 | x |"),
-        ], verdict="merge-with-fix", fix="Add the TCL C row to the README's main TV table (it is only in examples/README.md).")
+        # a showcase PR that edits a prose row of another README table: not a generated section, a plain merge
+        self.pr(109, "SHOWCASE: add Glass", [
+            ("SHOWCASE.md", "| Glass | a home screen |\n"),
+            ("README.md", "where two projects live", "where three projects live"),
+        ], verdict="merge")
+        # merge with a fix: the list forgot its tv.json
+        self.pr(104, "Add TCL C list", [("examples/tcl-c/debloat.txt", "# TCL C\ncom.tcl.ads\n")],
+                verdict="merge-with-fix", fix="Add examples/tcl-c/tv.json (TV, OS, brand, notes) for the tables.")
         self.pr(105, "Add Sony Q list", [("examples/sony-q/debloat.txt", "# Sony Q\ncom.sony.remotepair\n")],
                 verdict="rework", ask="Keep com.sony.remotepair enabled: without it a reset remote can't pair again.")
         self.pr(106, "Add Sony A list again", [("examples/sony-a2/debloat.txt", "# Sony A\ncom.example.ads\n")],
@@ -205,7 +220,7 @@ class E2E(unittest.TestCase):
         q.upsert(self.api, "2026-10-22")
         issue = max(self.api.issues)
         body = self.api.issues[issue]["body"]
-        for n in (101, 102, 103, 104, 105, 106):
+        for n in (101, 102, 103, 104, 105, 106, 109):
             self.assertIn(f"- [ ] #{n} ", body)
         self.assertIn("- #107 Launcher clock", body)
         self.assertIn("- #108 Weather card (by someone) · p2 · suggests merge · changes launcher/Weather.java", body)
@@ -215,13 +230,13 @@ class E2E(unittest.TestCase):
 
         def fake_propose(**kw):
             proposals.append(kw)
-            self.assertIn("README.md", kw["context_files"])
-            return {"edits": [{"path": "README.md", "search": "| TCL B | Android 11 |",
-                               "replace": "| TCL B | Android 11 |\n| TCL C | Android 12 |"}],
-                    "summary": "On merge: added the TCL C row to the README's main TV table"}
+            self.assertIn("examples/tcl-c/debloat.txt", kw["context_files"])
+            return {"edits": [{"path": "examples/tcl-c/tv.json", "search": "",
+                               "replace": tv_json("TCL C", "TCL", "Android 12")}],
+                    "summary": "On merge: added examples/tcl-c/tv.json for the README tables"}
 
         self.api.check_state[self.api.prs[104]["head_sha"]] = {"state": "failure", "failed": ["Lists, tools and docs"],
-                                                                 "pending": []}  # red until the fix adds the row
+                                                                 "pending": []}  # red until the fix adds tv.json
         ledger = Ledger(os.path.join(self.tmp.name, "ledger.jsonl"), 5.0)
         cfg = Config(approver="Gathin23", git=Git(self.work), propose=fake_propose, ledger=ledger,
                      counts=counts_runner(f"{sys.executable} {COUNTS} ."), sleep=lambda s: None, log=lambda s: None,
@@ -231,39 +246,52 @@ class E2E(unittest.TestCase):
         out = {o["pr"]: o for o in res["outcomes"]}
         self.assertEqual(res["stopped"], "", res["audit"])
         self.assertEqual({n: out[n]["status"] for n in out},
-                         {101: "done", 102: "done", 103: "done", 104: "done", 105: "done", 106: "done"})
+                         {101: "done", 102: "done", 103: "done", 104: "done", 105: "done", 106: "done", 109: "done"})
         self.assertNotIn(107, out)
         self.assertNotIn(108, out)
-        self.assertEqual(sorted(res["merged"]), [101, 102, 103, 104])
+        self.assertEqual(sorted(res["merged"]), [101, 102, 103, 104, 109])
         self.assertEqual(len(proposals), 1)
 
         # main: one merge commit per PR on the first-parent line, then the counts PR
         log = sh(self.bare, "log", "--first-parent", "--format=%s", "main").splitlines()
-        self.assertEqual(log[:5], ["README counts after today's merges", "Merge PR #104: Add TCL C list",
-                                   "Merge PR #103: Add Hitachi H list", "Merge PR #102: Add Vu Z list",
-                                   "Merge PR #101: Add Hisense G list"])
-        self.assertIn("On merge: added the TCL C row", sh(self.bare, "log", "--format=%B", "-n", "40", "main"))
+        self.assertEqual(log[:6], ["README counts after today's merges", "Merge PR #104: Add TCL C list",
+                                   "Merge PR #109: SHOWCASE: add Glass", "Merge PR #103: Add Hitachi H list",
+                                   "Merge PR #102: Add Vu Z list", "Merge PR #101: Add Hisense G list"])
+        self.assertIn("On merge: added examples/tcl-c/tv.json", sh(self.bare, "log", "--format=%B", "-n", "40", "main"))
         # bot branches went through PRs; the originals are marked merged because their heads are on main
         bot_prs = [c for c in self.api.calls if c[0] == "create_pr"]
         self.assertEqual([c[2] for c in bot_prs], ["bot/merge-103", "bot/merge-104", "bot/counts-2026-10-22"])
         self.assertTrue(bot_prs[1][3].startswith("Merge #104 with fix: "))
-        for n in (101, 102, 103, 104):
+        for n in (101, 102, 103, 104, 109):
             self.assertTrue(self.api.pr(n)["merged"], n)
             self.assertIn("Merged, thank", self.api.comments[n][-1]["body"])
-        self.assertIn("On merge: Added the TCL C row to the README's main TV table. (through #",
+        self.assertIn("On merge: Added examples/tcl-c/tv.json for the README tables. (through #",
                       self.api.comments[104][-1]["body"])
 
-        # the tree on main: both conflicting rows kept, the fix row in, counts and stats regenerated
+        # #103's rows became its tv.json on the bot branch; its README edits did not reach main as such
+        hitachi = json.loads(sh(self.bare, "show", "main:examples/hitachi-h/tv.json"))
+        self.assertEqual(hitachi, {"tv": "Hitachi H", "os": "Android 9", "brand": "Hitachi", "notes": "Hitachi ads off"})
+        body103 = next(p["body"] for p in self.api.prs.values() if p.get("head_ref") == "bot/merge-103")
+        self.assertIn("examples/hitachi-h/tv.json", body103)
+
+        # the tree on main after the counts PR: every list's row once, in alphabetical order; counts regenerated
         readme = sh(self.bare, "show", "main:README.md")
-        for row in ("| Hisense G | Android 11 |", "| Hitachi H | Android 9 |", "| Vu Z | Android 10 |",
-                    "| TCL C | Android 12 |"):
-            self.assertEqual(readme.count(row), 1, row)
+        rows = ["| Hisense G | Android 11 |", "| Hitachi H | Android 9 |", "| Sony A | Android 9 |",
+                "| TCL B | Android 11 |", "| TCL C | Android 12 |", "| TCL D | Android 11 |", "| Vu Z | Android 10 |",
+                "| Xiaomi F | Android 9 |"]
+        self.assertIn("|---|---|\n" + "\n".join(rows) + "\n", readme)
         self.assertIn('alt="8 TV models · 6 brands · 2 languages · 429 KB launcher.', readme)
         self.assertIn("**TCL** 3 ·\nHisense · Hitachi · Sony · Vu · Xiaomi ·", readme)
         ex = sh(self.bare, "show", "main:examples/README.md")
-        self.assertEqual(ex.count("| `hitachi-h/` |"), 1)
+        self.assertEqual(ex.count("| `hitachi-h/` | Hitachi H | Android 9 | Hitachi ads off |"), 1)
         self.assertEqual(ex.count("| `hisense-g/` |"), 1)
+        # hand-written parts of both files kept: #103's note line, #109's prose row (merged without a bot branch)
+        self.assertIn("- [Old K](../docs/devices/old-k.md): a one-day report\n- [Hitachi K](../docs/devices/hk.md): notes",
+                      ex)
+        self.assertIn("where three projects live", readme)
         self.assertIn('("8", "TV MODELS"), ("6", "BRANDS")', sh(self.bare, "show", "main:tools/readme_stats.py"))
+        counts_body = next(p["body"] for p in self.api.prs.values() if p.get("head_ref") == "bot/counts-2026-10-22")
+        self.assertIn("please check the spelling): Hisense, Hitachi, Vu.", counts_body)
 
         # rework, close, held
         self.assertIn("needs-rework", self.api.prs[105]["labels"])
@@ -277,10 +305,10 @@ class E2E(unittest.TestCase):
 
         # the queue issue: ticked, with an audit log
         body = self.api.issues[issue]["body"]
-        for n in (101, 102, 103, 104, 105, 106):
+        for n in (101, 102, 103, 104, 105, 106, 109):
             self.assertIn(f"- [x] #{n} ", body)
         audit = self.api.comments[issue][-1]["body"]
-        self.assertIn("4 merged", audit)
+        self.assertIn("5 merged", audit)
         self.assertIn("README counts: #", audit)
         self.assertIn("merged (8 TV models · 6 brands · 2 languages)", audit)
         self.assertIn("“looks good”", audit)
@@ -297,7 +325,7 @@ class E2E(unittest.TestCase):
         cfg = Config(approver="Gathin23", git=Git(self.work), propose=None, sleep=lambda s: None, log=lambda s: None,
                      today="2026-10-22", counts_note=note)
         res = Executor(self.api, cfg).run(issue, commands.parse("/approve except #104"))
-        self.assertEqual(sorted(res["merged"]), [101, 102, 103])
+        self.assertEqual(sorted(res["merged"]), [101, 102, 103, 109])
         self.assertIsNone(res["counts"])
         self.assertIn(note, self.api.comments[issue][-1]["body"])
 
