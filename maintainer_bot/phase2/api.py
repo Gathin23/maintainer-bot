@@ -19,6 +19,12 @@ class Api(GitHub):
     def pr_paths(self, n: int) -> list[str]:
         return [f["filename"] for f in self.paged(f"/pulls/{n}/files", limit=300)]
 
+    def pr_files(self, n: int) -> list[dict]:
+        """Name, old name (renames) and patch of each file, for the wave gate."""
+        return [{"filename": f["filename"], "previous_filename": f.get("previous_filename"),
+                 "status": f.get("status", ""), "patch": f.get("patch")}
+                for f in self.paged(f"/pulls/{n}/files", limit=300)]
+
     def pr_patches(self, n: int, limit: int = 12000) -> str:
         out = []
         for f in self.paged(f"/pulls/{n}/files", limit=300):
@@ -69,6 +75,9 @@ class Api(GitHub):
                 failed.append(s["context"])
         state = "failure" if failed else "pending" if pending else "success" if ok else "none"
         return {"state": state, "failed": failed, "pending": pending}
+
+    def branch_sha(self, branch: str) -> str:
+        return self.get(f"/git/ref/heads/{branch}")["object"]["sha"]
 
     def merge(self, n: int, sha: str, title: str, message: str = "") -> dict:
         return self.write("PUT", f"/pulls/{n}/merge", {"merge_method": "merge", "sha": sha,

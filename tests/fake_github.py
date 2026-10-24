@@ -51,6 +51,9 @@ class FakeApi:
         self.calls: list[tuple] = []
         self.deleted: list[str] = []
         self.red_branches: set[str] = set()
+        self.main_sha = "m" * 40           # without a bare repo; with one, main's real head
+        self.main_checks: list[dict] = []  # main's CI, one per read (the last repeats); empty = default_checks
+        self.patches: dict[tuple[int, str], str] = {}
         self._ids = itertools.count(1000)
         self._num = itertools.count(500)
 
@@ -86,6 +89,22 @@ class FakeApi:
     def pr_paths(self, n):
         return list(self.prs[n]["paths"])
 
+    def pr_files(self, n):
+        p = self.prs[n]
+        out = []
+        for path in p["paths"]:
+            patch = self.patches.get((n, path))
+            if patch is None and self.bare:
+                diff = self.git("diff", f"main...{p['head_sha']}", "--", path).stdout
+                patch = diff[diff.find("@@"):] if "@@" in diff else ""
+            elif patch is None:
+                patch = "+| a row |" if path.endswith("README.md") else "+row"
+            out.append({"filename": path, "previous_filename": None, "status": "modified", "patch": patch})
+        return out
+
+    def branch_sha(self, branch):
+        return self.git("rev-parse", branch).stdout.strip() if self.bare else self.main_sha
+
     def pr_patches(self, n):
         return "\n".join(f"--- {p}\n+row" for p in self.prs[n]["paths"])
 
@@ -103,6 +122,9 @@ class FakeApi:
                 for n, p in sorted(self.prs.items()) if p["state"] == "open"]
 
     def checks(self, sha, ignore=()):
+        if sha == self.branch_sha("main") and self.main_checks:
+            self.calls.append(("main-checks", sha))
+            return self.main_checks.pop(0) if len(self.main_checks) > 1 else self.main_checks[0]
         for p in self.prs.values():
             if p.get("bot") and p["head_sha"] == sha and p["head_ref"] in self.red_branches:
                 return {"state": "failure", "failed": ["Lists, tools and docs"], "pending": []}

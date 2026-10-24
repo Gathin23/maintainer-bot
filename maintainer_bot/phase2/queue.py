@@ -10,7 +10,7 @@ import json
 import re
 
 from ..live import MARKER, _clean
-from . import commands, sticky
+from . import commands, gate, sticky
 
 LABEL = "maintainer-queue"
 DATA_MARK = "<!-- mb-queue "
@@ -19,7 +19,7 @@ MAX_BODY = 60000
 SECTIONS = [("merge", "Merge"), ("merge-with-fix", "Merge with a small fix"), ("rework", "A few changes first"),
             ("theme", "Move to themes/"), ("addon", "Close, and invite it as an add-on"),
             ("showcase", "Close, and offer a SHOWCASE row for the fork"), ("close", "Close (kindly)"),
-            ("hold", "Needs a maintainer")]
+            ("outside", "For a maintainer: outside the wave's paths"), ("hold", "Needs a maintainer")]
 PRIO = {"p0": 0, "p1": 1, "p2": 2, "p3": 3, "": 4}
 BOT_LABELS = set(sticky.LABEL_VERDICT)
 HOLD_LABEL = "on-hold"          # the maintainer's own hold: never queued
@@ -51,7 +51,11 @@ def collect(api) -> tuple[dict[int, dict], dict]:
         if s["verdict"] in ("rework", "theme") and REWORK_LABEL in p["labels"]:
             stats["waiting"].append(p["number"])
             continue
-        items[p["number"]] = {"title": p["title"], "author": p["author"], **s}
+        it = {"title": p["title"], "author": p["author"], **s}
+        if s["verdict"] != "hold":
+            # the launch gate: only lists, docs, themes, SHOWCASE, README table rows and translations go in a wave
+            it["outside"] = gate.check(api.pr_files(p["number"]))
+        items[p["number"]] = it
     return items, stats
 
 
@@ -64,6 +68,8 @@ def _line(n: int, it: dict, box: bool) -> str:
     lead = {"merge-with-fix": "fix: ", "rework": "ask: ", "close": "why: ", "hold": "question: ",
             "addon": "addons/", "theme": "themes/"}.get(it["verdict"], "")
     tail = f" · {lead}{_clean(extra, 200)}" if extra else ""
+    if it.get("outside"):
+        tail = f" · suggests {it['verdict']} · {_clean(it['outside'], 120)}"
     prio = f" · {it['priority']}" if it.get("priority") else ""
     return f"{'- [ ] ' if box else '- '}#{n} {title} (by {who}){prio}{tail}"
 
@@ -79,7 +85,8 @@ def render(date: str, items: dict[int, dict], stats: dict, notes: list[str] | No
 
 
 def _render(date: str, items: dict[int, dict], stats: dict, notes: list[str]) -> str:
-    n_act = sum(1 for it in items.values() if it["verdict"] != "hold")
+    section = {n: "outside" if it.get("outside") else it["verdict"] for n, it in items.items()}
+    n_act = sum(1 for v in section.values() if v not in ("hold", "outside"))
     out = [f"**Today's queue · {date}** · {len(items)} PRs with a review at their latest commit, "
            f"{n_act} with a proposed action.", "",
            "Comment here to act (only the repo owner and the allow-list are read):",
@@ -87,13 +94,13 @@ def _render(date: str, items: dict[int, dict], stats: dict, notes: list[str]) ->
            "`/skip #n` · `/close #n reason` · `/rework #n ask`. Anything else is kept as a note, never an action.",
            ""]
     for key, heading in SECTIONS:
-        group = [n for n in items if items[n]["verdict"] == key]
+        group = [n for n in items if section[n] == key]
         if not group:
             continue
         out.append(f"### {heading} ({len(group)})")
-        if key == "hold":
+        if key in ("hold", "outside"):
             out.append("_Not part of `/approve`; only `/close #n` or `/rework #n` moves these._")
-        out += [_line(n, items[n], box=key != "hold") for n in group]
+        out += [_line(n, items[n], box=key not in ("hold", "outside")) for n in group]
         out.append("")
     extra = []
     if stats.get("stale"):
@@ -113,7 +120,8 @@ def _render(date: str, items: dict[int, dict], stats: dict, notes: list[str]) ->
                ["", "</details>", ""]
     if notes:
         out += ["**Notes from the last queue**", ""] + [f"> {_clean(x, 300)}" for x in notes] + [""]
-    data = {"date": date, "items": {str(n): {"sha": it["sha"], "v": it["verdict"]} for n, it in items.items()}}
+    data = {"date": date, "items": {str(n): {"sha": it["sha"], "v": it["verdict"],
+                                             **({"o": 1} if it.get("outside") else {})} for n, it in items.items()}}
     out += [FOOTER, "", DATA_MARK + json.dumps(data, separators=(",", ":")) + " -->"]
     return "\n".join(out)
 

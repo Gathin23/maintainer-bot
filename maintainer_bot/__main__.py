@@ -12,6 +12,8 @@
 Phase 2 (acts only on a maintainer's /approve; see docs/phase2.md):
     python -m maintainer_bot queue-issue     --repo OWNER/NAME [--allow USERS] [--dry-run]
     python -m maintainer_bot on-comment      --repo OWNER/NAME --event $GITHUB_EVENT_PATH [--workdir .] [--counts CMD]
+                                             [--max-wave 25] [--main-every 5]
+    python -m maintainer_bot counts-pr       --repo OWNER/NAME --workdir . --counts-dir DIR --merged 12,15
     python -m maintainer_bot dry-run-approve --repo OWNER/NAME [--counts-check CMD --counts-dir PATH] [--out FILE]
 
 Live actions only run inside the GitHub Action (see action.yml); dry-run-approve never writes.
@@ -92,25 +94,48 @@ def main(argv: list[str] | None = None) -> None:
     oc.add_argument("--ledger", default=os.environ.get("MB_LEDGER", ".maintainer-bot/ledger.jsonl"))
     oc.add_argument("--daily-cap", type=float, default=float(os.environ.get("MB_DAILY_CAP", "5")))
     oc.add_argument("--model", default=os.environ.get("MB_MODEL", "claude-opus-5.5"))
+    oc.add_argument("--max-wave", type=int, default=int(os.environ.get("MB_MAX_WAVE") or 25),
+                    help="most PRs one /approve acts on")
+    oc.add_argument("--main-every", type=int, default=int(os.environ.get("MB_MAIN_EVERY") or 5),
+                    help="wait for main's CI after this many merges (0: only before and after the wave)")
+    oc.add_argument("--counts-note", default=os.environ.get("MB_COUNTS_NOTE", ""),
+                    help="audit line when the README counts run in a separate job")
+    cp = sub.add_parser("counts-pr")
+    cp.add_argument("--repo", required=True)
+    cp.add_argument("--workdir", required=True)
+    cp.add_argument("--counts-dir", required=True, help="holds counts.patch and counts.json from the counts job")
+    cp.add_argument("--merged", default=os.environ.get("MB_MERGED", ""), help="the PRs the batch merged, 12,15")
     dr = sub.add_parser("dry-run-approve")
     dr.add_argument("--repo", required=True)
     dr.add_argument("--counts-check", default="")
     dr.add_argument("--counts-dir", default="")
     dr.add_argument("--out", default="")
+    dr.add_argument("--max-wave", type=int, default=25)
     args = ap.parse_args(argv)
 
-    if args.cmd in ("queue-issue", "on-comment", "dry-run-approve"):
+    if args.cmd in ("queue-issue", "on-comment", "counts-pr", "dry-run-approve"):
         from .phase2 import cli as p2
         if args.cmd == "queue-issue":
             print(json.dumps(p2.queue_issue(args.repo, allow=args.allow, dry_run=args.dry_run)))
         elif args.cmd == "on-comment":
             r = p2.on_comment(args.repo, args.event, allow=args.allow, workdir=args.workdir, counts_cmd=args.counts,
                               ledger_path=args.ledger, cap=args.daily_cap, model=args.model,
-                              git_name=os.environ.get("MB_GIT_NAME", ""), git_email=os.environ.get("MB_GIT_EMAIL", ""))
+                              git_name=os.environ.get("MB_GIT_NAME", ""), git_email=os.environ.get("MB_GIT_EMAIL", ""),
+                              max_wave=args.max_wave, main_every=args.main_every, counts_note=args.counts_note)
             print(json.dumps({k: v for k, v in r.items() if k != "audit"}, default=str))
+            if os.environ.get("GITHUB_OUTPUT"):  # the counts job runs only when something merged
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                    f.write("merged=" + ",".join(str(n) for n in r.get("merged") or []) + "\n")
+        elif args.cmd == "counts-pr":
+            merged = [int(x) for x in args.merged.replace(",", " ").split() if x.isdigit()]
+            r = p2.counts_pr(args.repo, args.workdir, args.counts_dir, merged,
+                             git_name=os.environ.get("MB_GIT_NAME", ""), git_email=os.environ.get("MB_GIT_EMAIL", ""))
+            print(json.dumps(r, default=str))
+            if r.get("status") in ("failed", "refused"):
+                raise SystemExit(1)
         else:
             print(p2.dry_run_approve(args.repo, counts_check=args.counts_check, counts_dir=args.counts_dir,
-                                     out=args.out))
+                                     out=args.out, max_wave=args.max_wave))
         return
 
     if args.cmd in ("review", "backfill", "refresh"):

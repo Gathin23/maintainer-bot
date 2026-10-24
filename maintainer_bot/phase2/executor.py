@@ -2,6 +2,9 @@
 
 Order: closes and rework asks first (no CI involved), then merges by priority, then merges with a fix, then one
 README counts PR. Safety checks run again for every PR at the moment of acting, whatever the queue said.
+
+A wave only starts when main's CI is green, acts on at most `max_wave` PRs, only on PRs inside the launch gate
+(gate.py), and waits for main's CI again after every `main_every` merges and after the last one: red stops it.
 """
 from __future__ import annotations
 
@@ -12,14 +15,15 @@ from typing import Callable
 
 from ..ledger import BudgetExceeded
 from ..live import MARKER, SKIP_PATHS
-from . import fixer, messages, queue as queue_mod, sticky
+from . import fixer, gate, messages, queue as queue_mod, sticky
 from .commands import Commands
 from .gitops import Git, GitError
 
 NEVER_MERGE_LABELS = ("needs-maintainer", queue_mod.HOLD_LABEL)
 # a v1 review sent every launcher PR to the maintainer; a v2 review passed the launcher gate, so only v1 blocks
 V1_ONLY_LABELS = ("launcher",)
-NEVER_MERGE_PATHS = SKIP_PATHS + (".github/maintainer/",)
+# tools/ holds the scripts the counts step runs; PROMPT.md is the agents' safety prompt
+NEVER_MERGE_PATHS = SKIP_PATHS + (".github/maintainer/", "tools/", "PROMPT.md")
 REWORK_LABEL = queue_mod.REWORK_LABEL
 
 
@@ -41,6 +45,10 @@ class Config:
     ignore_checks: tuple[str, ...] = ("review",)
     where_link: str = ""                      # the repo's "Where does my idea go?" table, for showcase/addon/theme
     max_fix_lines: int = fixer.MAX_CHANGED_LINES
+    max_wave: int = 25                        # most PRs one /approve acts on; the next /approve picks up the rest
+    main_every: int = 5                       # wait for main's CI after this many merges (0: only before and after)
+    base: str = "main"
+    counts_note: str = ""                     # audit line when the README counts run in a separate job
     dry_run: bool = False                     # decide everything, write nothing (the read-only report)
     log: Callable[[str], None] = print
     today: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d"))
@@ -82,6 +90,7 @@ class Executor:
         self.api, self.cfg = api, cfg
         self.merged: list[int] = []
         self.outcomes: list[Outcome] = []
+        self.main_state = ""                  # main's CI before the wave, for the report
 
     # ---- entry point ----
     def run(self, issue_n: int, cmds: Commands) -> dict:
@@ -89,11 +98,17 @@ class Executor:
         data = queue_mod.read_data(issue["body"])
         if not data:
             return {"error": "not a queue issue"}
-        items = {int(k): {"sha": v["sha"], "verdict": v["v"]} for k, v in data["items"].items()}
+        items = {int(k): {"sha": v["sha"], "verdict": v["v"], "outside": bool(v.get("o"))}
+                 for k, v in data["items"].items()}
         plan = cmds.plan(items)
         body = issue["body"]
-        stopped = ""
-        for n in order(plan, items):
+        stopped = self.main_red("before the wave") if plan else ""
+        acted, checked = 0, 0
+        for n in ([] if stopped and not self.cfg.dry_run else order(plan, items)):
+            if acted >= self.cfg.max_wave:
+                self.outcomes.append(Outcome(n, plan[n]["action"], "skipped",
+                                             f"over the wave size cap ({self.cfg.max_wave}): the next /approve"))
+                continue
             try:
                 o = self.one(n, plan[n], items[n])
             except StopBatch as e:
@@ -104,18 +119,46 @@ class Executor:
                 stopped = stopped or f"#{n}: error"
             self.outcomes.append(o)
             self.cfg.log(f"#{n} {o.action}: {o.status} {o.detail}")
+            acted += o.status in ("done", "would")
             if o.status == "done":
                 body = queue_mod.tick(body, n, o.detail.split(";")[0])
                 if not self.cfg.dry_run:
                     self.api.update_issue(issue_n, body=body)
             if stopped and not self.cfg.dry_run:  # a dry run lists every PR, and where a real batch would stop
                 break
+            if self.cfg.main_every and len(self.merged) - checked >= self.cfg.main_every:
+                checked = len(self.merged)
+                stopped = self.main_red(f"after {checked} merges")
+                if stopped:
+                    break
+        if len(self.merged) > checked:  # the last merges: main must end the wave green
+            why = self.main_red(f"after the wave's {len(self.merged)} merges")
+            stopped = f"{stopped}; {why}" if stopped and why else stopped or why
         counts = self.counts_step() if self.merged else None
         audit = self.audit(cmds, stopped, counts)
         if not self.cfg.dry_run:
             self.api.comment(issue_n, audit)
         return {"outcomes": [o.__dict__ for o in self.outcomes], "stopped": stopped, "counts": counts,
                 "audit": audit, "merged": self.merged}
+
+    # ---- main's CI ----
+    def main_red(self, when: str) -> str:
+        """'' when main's CI is green (waiting while it runs), else why the wave must not go on."""
+        try:
+            sha = self.api.branch_sha(self.cfg.base)
+            if self.cfg.dry_run:  # read once, never wait
+                c = self.api.checks(sha, ignore=self.cfg.ignore_checks)
+                self.main_state = c["state"]
+                return f"main's CI is failing {when}: {', '.join(c['failed'][:3])}" if c["state"] == "failure" else ""
+            c = wait_checks(self.api, sha, self.cfg)
+        except Exception as e:  # noqa: BLE001 - unknown is not green
+            self.main_state = "unknown"
+            return f"main's CI could not be read {when}: {str(e)[:120]}"
+        self.main_state = c["state"]
+        if c["state"] == "success":
+            return ""
+        detail = "timed out" if c["state"] == "timeout" else "failing: " + ", ".join(c["failed"][:3])
+        return f"main's CI {detail} {when} (main at {sha[:7]})"
 
     # ---- one PR ----
     def one(self, n: int, step: dict, item: dict) -> Outcome:
@@ -134,6 +177,10 @@ class Executor:
             return Outcome(n, action, "skipped", "changes were already asked")
         if step["source"] == "approve" and review["verdict"] != item["verdict"]:
             return Outcome(n, action, "skipped", f"the suggestion is now {review['verdict']}, not {item['verdict']}")
+        if step["source"] == "approve":
+            why = gate.check(self.api.pr_files(n))
+            if why:
+                return Outcome(n, action, "skipped", f"outside the wave's paths ({why}): for a maintainer")
         text = step["text"] if step["source"] == "command" else \
             {"merge-with-fix": review["fix"], "rework": review["ask"]}.get(action, review["reason"])
         if action == "close":
@@ -225,6 +272,9 @@ class Executor:
                 return Outcome(n, action, "skipped", f"fix model: {e}")
             if fx["problems"]:
                 return Outcome(n, action, "skipped", "the fix needs a maintainer: " + "; ".join(fx["problems"][:2]))
+            why = gate.edits_reason(fx["edits"])
+            if why:
+                return Outcome(n, action, "skipped", f"the fix leaves the wave's paths ({why}): for a maintainer")
             git.apply_edits(fx["edits"], f"On merge: {fx['summary']}")
         if self.cfg.dry_run:
             return Outcome(n, action, "would", f"bot PR from {prep['branch']}"
@@ -293,7 +343,10 @@ class Executor:
         for o in self.outcomes:
             lines.append(f"- #{o.pr} {o.action}: {verbs[o.status]}{o.detail}" + (f" ({o.link})" if o.link else ""))
         if stopped:
-            lines += ["", f"**Stopped at {stopped}.** The rest waits for the next `/approve`."]
+            where = f"at {stopped}" if stopped.startswith("#") else f"because {stopped}"
+            lines += ["", f"**Stopped {where}.** The rest waits for the next `/approve`."]
+        if counts is None and self.merged and self.cfg.counts_note:
+            lines += ["", self.cfg.counts_note]
         if counts:
             c = counts
             what = f"#{c['pr']} " if c.get("pr") else ""

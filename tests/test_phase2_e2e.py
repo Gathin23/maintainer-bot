@@ -15,7 +15,7 @@ import unittest
 
 from maintainer_bot.ledger import Ledger
 from maintainer_bot.phase2 import commands, queue as q
-from maintainer_bot.phase2.cli import counts_runner
+from maintainer_bot.phase2.cli import counts_pr, counts_runner
 from maintainer_bot.phase2.executor import Config, Executor
 from maintainer_bot.phase2.gitops import Git
 from tests.fake_github import FakeApi
@@ -172,10 +172,12 @@ class E2E(unittest.TestCase):
         ], verdict="merge-with-fix", fix="Add the TCL C row to the README's main TV table (it is only in examples/README.md).")
         self.pr(105, "Add Sony Q list", [("examples/sony-q/debloat.txt", "# Sony Q\ncom.sony.remotepair\n")],
                 verdict="rework", ask="Keep com.sony.remotepair enabled: without it a reset remote can't pair again.")
-        self.pr(106, "Weather card", [("launcher/Weather.java", "class W {}\n")], verdict="close",
-                reason="Thanks for building this! It needs the INTERNET permission, and the launcher stays offline.")
+        self.pr(106, "Add Sony A list again", [("examples/sony-a2/debloat.txt", "# Sony A\ncom.example.ads\n")],
+                verdict="close", reason="Thanks for this! The Sony A is already on the list, so this one is a duplicate.")
         self.pr(107, "Launcher clock", [("launcher/Clock.java", "class C {}\n")], verdict="hold",
                 question="launcher code", labels=["launcher"])
+        # a merge suggestion outside the wave's paths: listed for the maintainer, never touched by /approve
+        self.pr(108, "Weather card", [("launcher/Weather.java", "class W {}\n")], verdict="merge", version=2)
 
     def run_batch(self, propose=None):
         q.upsert(self.api, "2026-10-22")
@@ -206,6 +208,7 @@ class E2E(unittest.TestCase):
         for n in (101, 102, 103, 104, 105, 106):
             self.assertIn(f"- [ ] #{n} ", body)
         self.assertIn("- #107 Launcher clock", body)
+        self.assertIn("- #108 Weather card (by someone) · p2 · suggests merge · changes launcher/Weather.java", body)
 
         sh(self.tmp.name, "clone", "-q", self.bare, self.work)  # what actions/checkout gives the job
         proposals = []
@@ -230,6 +233,7 @@ class E2E(unittest.TestCase):
         self.assertEqual({n: out[n]["status"] for n in out},
                          {101: "done", 102: "done", 103: "done", 104: "done", 105: "done", 106: "done"})
         self.assertNotIn(107, out)
+        self.assertNotIn(108, out)
         self.assertEqual(sorted(res["merged"]), [101, 102, 103, 104])
         self.assertEqual(len(proposals), 1)
 
@@ -266,9 +270,10 @@ class E2E(unittest.TestCase):
         self.assertIn("Keep com.sony.remotepair enabled", self.api.comments[105][-1]["body"])
         self.assertEqual(self.api.prs[105]["state"], "open")
         self.assertEqual(self.api.prs[106]["state"], "closed")
-        self.assertIn("the launcher stays offline", self.api.comments[106][-1]["body"])
+        self.assertIn("already on the list", self.api.comments[106][-1]["body"])
         self.assertEqual(self.api.prs[107]["state"], "open")
         self.assertEqual(len(self.api.comments[107]), 1)  # only the review
+        self.assertEqual((self.api.prs[108]["state"], len(self.api.comments[108])), ("open", 1))
 
         # the queue issue: ticked, with an audit log
         body = self.api.issues[issue]["body"]
@@ -280,6 +285,43 @@ class E2E(unittest.TestCase):
         self.assertIn("merged (8 TV models · 6 brands · 2 languages)", audit)
         self.assertIn("“looks good”", audit)
         self.assertEqual(set(self.api.deleted), {"bot/merge-103", "bot/merge-104", "bot/counts-2026-10-22"})
+
+    def test_counts_in_jobs_of_their_own(self):
+        """The workflow's split: the act job runs no counts; a job without credentials runs the repo's counts
+        tools and makes a patch; the counts-pr job checks the patch and opens the counts PR."""
+        self.scenario()
+        q.upsert(self.api, "2026-10-22")
+        issue = max(self.api.issues)
+        sh(self.tmp.name, "clone", "-q", self.bare, self.work)
+        note = "README counts: a separate job redraws them."
+        cfg = Config(approver="Gathin23", git=Git(self.work), propose=None, sleep=lambda s: None, log=lambda s: None,
+                     today="2026-10-22", counts_note=note)
+        res = Executor(self.api, cfg).run(issue, commands.parse("/approve except #104"))
+        self.assertEqual(sorted(res["merged"]), [101, 102, 103])
+        self.assertIsNone(res["counts"])
+        self.assertIn(note, self.api.comments[issue][-1]["body"])
+
+        # the counts job: a plain clone (no push access needed), the counts script, a binary patch
+        plain, out = os.path.join(self.tmp.name, "plain"), os.path.join(self.tmp.name, "counts")
+        os.makedirs(out)
+        sh(self.tmp.name, "clone", "-q", self.bare, plain)
+        r = subprocess.run([sys.executable, COUNTS, plain], capture_output=True, text=True, check=True)
+        write(out, "counts.json", r.stdout.strip().splitlines()[-1])
+        write(out, "counts.patch", sh(plain, "diff", "--binary") + "\n")
+
+        # the counts-pr job: its own checkout with push access
+        work2 = os.path.join(self.tmp.name, "work2")
+        sh(self.tmp.name, "clone", "-q", self.bare, work2)
+        r = counts_pr("o/r", work2, out, res["merged"], api=self.api,
+                      cfg={"sleep": lambda s: None, "log": lambda s: None, "today": "2026-10-22"})
+        self.assertEqual(r["status"], "merged", r)
+        self.assertEqual(sh(self.bare, "log", "-1", "--format=%s", "main"), "README counts after today's merges")
+        self.assertIn('alt="7 TV models · 6 brands', sh(self.bare, "show", "main:README.md"))
+
+        # a patch that reaches past the counts files is refused before anything is applied
+        write(out, "counts.patch", "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n+x\n")
+        r = counts_pr("o/r", work2, out, [101], api=self.api, cfg={"sleep": lambda s: None, "log": lambda s: None})
+        self.assertEqual(r["status"], "refused")
 
     def test_bot_cannot_push_main(self):
         sh(self.tmp.name, "clone", "-q", self.bare, self.work)

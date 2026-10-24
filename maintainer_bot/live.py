@@ -83,7 +83,13 @@ class GitHub:
 
     def get(self, path: str, **params):
         for attempt in range(4):
-            r = self.s.get(f"{API}/repos/{self.repo}{path}", params=params, timeout=60)
+            try:
+                r = self.s.get(f"{API}/repos/{self.repo}{path}", params=params, timeout=60)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 3:
+                    raise
+                time.sleep(10 * (attempt + 1))
+                continue
             if r.status_code in (502, 503, 504) or (r.status_code == 403 and "rate limit" in r.text.lower()):
                 time.sleep(10 * (attempt + 1))
                 continue

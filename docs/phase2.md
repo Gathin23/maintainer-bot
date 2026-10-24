@@ -44,9 +44,25 @@ Every merged PR gets a short thank-you naming what changed on merge.
 
 ## Safety
 
+- **The launch gate** (`maintainer_bot/phase2/gate.py`): `/approve` only acts on PRs whose every file is a TV list
+  or note under `examples/`, a doc under `docs/`, a theme under `themes/`, `SHOWCASE.md`, table rows in
+  `README.md`, or a launcher translation (`launcher/app/src/main/res/values-<locale>/strings.xml`, which CI lints
+  and builds). Inside those folders only data files count (`.txt .md .json .png .jpg .jpeg .webp .gif`), so a
+  `restore.sh` in an example folder stays out. Renames are checked on both names; a README patch the API doesn't
+  show, or 300+ files, keeps the PR out. Everything else (launcher code, `addons/`, `tools/`, `PROMPT.md`,
+  scripts, workflows) is listed in the queue under "For a maintainer: outside the wave's paths" without a
+  checkbox; only `/close #n` or `/rework #n` moves those. The executor checks the gate again when it acts, and
+  a fix's edits must stay inside it too.
+- **Wave size**: one `/approve` acts on at most `max-wave` PRs (default 25; skips don't count). The rest are
+  listed as over the cap, and the next `/approve` on the same issue picks them up.
+- **main's CI around the wave**: the wave starts only once main's checks are green (it waits while they run, up
+  to 40 minutes; red, a timeout or an unreadable state stops it before anything happens). After every
+  `main-check-every` merges (default 5) and after the last merge it waits for main's CI again; red stops the wave
+  and the audit says where. Every merge is a merge commit, so `git revert -m 1` undoes one PR.
 - Never merges PRs labelled `needs-maintainer` or `on-hold` (or `launcher`, when the review is a v1 review that
   sent every launcher PR to the maintainer; a v2 review has passed the launcher gate), or PRs that change `.github/`,
-  `.opencodereview/` or the bot's rules (`.github/maintainer/`), even if a command names them. An explicit
+  `.opencodereview/`, the bot's rules (`.github/maintainer/`), `tools/` (the counts step runs those scripts) or
+  `PROMPT.md`, even if a command names them. An explicit
   `/close #n` or `/rework #n` from the owner still works on them (a comment, and for close, closing the PR).
   `on-hold` PRs are left out of the queue entirely.
 - The head commit must be the one the bot reviewed (the sticky comment records it). If the author pushed since,
@@ -64,7 +80,9 @@ Every merged PR gets a short thank-you naming what changed on merge.
   has no `workflows` permission, so it could not push them), and CleanYourTV's CI uses a read-only token and
   no secrets.
 - Merges go through PRs only; the bot never pushes to the default branch. It writes only to `bot/*` branches.
-- Spend cap for the fix model (daily ledger, as in phase 1). The queue itself makes no model calls.
+- Spend cap: the fix model shares the review workflow's daily ledger and cap (`MAINTAINER_BOT_DAILY_CAP`, $25 for
+  launch week; per-PR cap $0.50). The ledger is a per-run Actions cache, so runs that overlap don't see each
+  other's spend: the per-PR cap is the hard brake. The queue itself makes no model calls.
 - The bot's own `bot/*` PRs are skipped by the phase-1 review and left out of the queue.
 - Full audit log on the queue issue: each action with links, skips with reasons, and the spend.
 
@@ -73,7 +91,7 @@ Every merged PR gets a short thank-you naming what changed on merge.
 `GITHUB_TOKEN` cannot trigger CI on the branches it pushes, so the executor uses either:
 - a GitHub App (preferred): secrets `MAINTAINER_BOT_CLIENT_ID` and `MAINTAINER_BOT_PRIVATE_KEY`, token from
   `actions/create-github-app-token` (pinned); permissions contents write, pull requests write, issues write,
-  checks read, metadata read; no webhook; or
+  checks read, commit statuses read (the CI gate reads both), metadata read; no webhook; or
 - a fine-grained personal access token in `MAINTAINER_BOT_TOKEN` with the same repository permissions.
 
 `setup/` has the App manifest, a one-click creation page (`create-app.html`), `finish-app.sh` (turns the
@@ -81,6 +99,14 @@ manifest code into the two secrets without printing the key) and `open-workflow-
 pushed commit and opens the PR that switches phase 2 on).
 
 ## README counts (cleanyourtv)
+
+The counts run the repo's own scripts, so on CleanYourTV they never share a job with a secret. The workflow has
+three jobs after a comment: `act` (App token and 0G key; runs no repo code: API calls, git merges and the fix
+model), then `counts` (no secrets, no token, checkout without credentials: runs the counts script below and
+uploads `counts.patch` + `counts.json`), then `counts-pr` (an App token cut down to contents and pull requests
+write, checks and statuses read; runs no repo code: refuses a patch that touches anything but `README.md`,
+`docs/stats.png`, `docs/card.jpg` and the `STATS` line of `tools/readme_stats.py`, applies it to main, opens
+"README counts after today's merges", waits for its CI and merges it).
 
 `examples/cleanyourtv/update_counts.py` runs on a fresh checkout of main after the batch. It counts TV models
 (folders in `examples/`), brands (folder prefix mapped to the names already on the README brand line) and
@@ -99,5 +125,8 @@ of its TV cell in `examples/README.md`; the counts PR lists such new brands so t
   merge) and a fake API merges for real. One `/approve` batch: 3 merges (one through a bot branch after a table
   conflict), 1 merge with a fix (its own CI red until the fix), 1 rework, 1 close, 1 held PR untouched, then the
   counts PR; and a second run where the bot branch's CI is red and the batch stops.
-- `python -m maintainer_bot dry-run-approve --repo OWNER/NAME`: read-only report of what `/approve` would do
-  today on the real repo.
+- `tests/test_gate.py`: the launch gate (inside and outside paths, README rows, renames, translations, fix
+  edits), outside items in the queue, the wave size cap, main's CI before, during and after a wave, and the
+  counts patch check.
+- `python -m maintainer_bot dry-run-approve --repo OWNER/NAME [--max-wave 25]`: read-only report of what
+  `/approve` would do today on the real repo, with the gate's exclusions and main's CI state.

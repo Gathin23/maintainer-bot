@@ -39,7 +39,8 @@ class Commands:
     def plan(self, queue: dict[int, dict]) -> dict[int, dict]:
         """queue = {pr: {"verdict": ..., ...}} → {pr: {"action": verdict, "text": reason/ask, "source": ...}}.
 
-        Explicit /close and /rework win over everything; "hold" items move only through those."""
+        Explicit /close and /rework win over everything; "hold" items and items outside the wave's paths move only
+        through those."""
         out: dict[int, dict] = {}
         for pr, item in queue.items():
             if pr in self.skipped:
@@ -51,7 +52,7 @@ class Commands:
                 out[pr] = {"action": "rework", "text": self.reworks[pr] or item.get("ask", ""), "source": "command"}
                 continue
             v = item["verdict"]
-            if v == "hold":
+            if v == "hold" or item.get("outside"):  # outside the wave's paths: only /close and /rework move it
                 continue
             chosen = (pr in self.only) if self.only else (self.approve_all and pr not in self.excluded)
             if chosen:

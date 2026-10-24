@@ -4,7 +4,8 @@ branding: { icon: check-circle, color: green }
 inputs:
   mode:
     description: "review (phase 1, default) | refresh (after CI: facts and policy only, no model) | queue (open
-      today's queue issue) | command (act on a /approve comment)"
+      today's queue issue) | command (act on a /approve comment) | counts-pr (open and merge the README counts PR
+      from a patch another job made)"
     required: false
     default: review
   github-token:
@@ -24,7 +25,27 @@ inputs:
     required: false
     default: ""
   workdir:
-    description: "command: a checkout of the repo (with push access through the token) for the bot/* branches"
+    description: "command, counts-pr: a checkout of the repo (with push access through the token) for the bot/* branches"
+    required: false
+    default: ""
+  max-wave:
+    description: "command: most PRs one /approve acts on; the next /approve picks up the rest"
+    required: false
+    default: "25"
+  main-check-every:
+    description: "command: wait for main's CI after this many merges (it is also checked before and after the wave)"
+    required: false
+    default: "5"
+  counts-note:
+    description: "command: line for the audit when the README counts run in a separate job"
+    required: false
+    default: ""
+  counts-dir:
+    description: "counts-pr: directory with counts.patch and counts.json from the job that ran the counts"
+    required: false
+    default: ""
+  merged:
+    description: "counts-pr: the PRs the batch merged (the command step's merged output)"
     required: false
     default: ""
   pr:
@@ -67,6 +88,10 @@ inputs:
     description: where the spend ledger lives (cache it between runs to enforce the daily cap)
     required: false
     default: .maintainer-bot
+outputs:
+  merged:
+    description: "command: the PRs this batch merged, comma separated (empty when none)"
+    value: ${{ steps.run.outputs.merged }}
 runs:
   using: composite
   steps:
@@ -78,7 +103,8 @@ runs:
       run: |
         python -m pip install -q "requests==2.32.3"
         if [ "$MB_MODE" = "command" ]; then python -m pip install -q "pillow==12.2.0"; fi
-    - shell: bash
+    - id: run
+      shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         OG_PC_API_KEY: ${{ inputs.og-pc-api-key }}
@@ -100,6 +126,11 @@ runs:
         MB_COUNTS_CMD: ${{ inputs.counts-command }}
         MB_WORKDIR: ${{ inputs.workdir }}
         MB_ACTION_PATH: ${{ github.action_path }}
+        MB_MAX_WAVE: ${{ inputs.max-wave }}
+        MB_MAIN_EVERY: ${{ inputs.main-check-every }}
+        MB_COUNTS_NOTE: ${{ inputs.counts-note }}
+        MB_COUNTS_DIR: ${{ inputs.counts-dir }}
+        MB_MERGED: ${{ inputs.merged }}
       run: |
         set -euo pipefail
         if [ "$MB_MODE" = "queue" ]; then
@@ -112,6 +143,10 @@ runs:
         fi
         if [ "$MB_MODE" = "command" ]; then
           python -m maintainer_bot on-comment --repo "$MB_REPO" --event "$GITHUB_EVENT_PATH" --workdir "$MB_WORKDIR"
+          exit 0
+        fi
+        if [ "$MB_MODE" = "counts-pr" ]; then
+          python -m maintainer_bot counts-pr --repo "$MB_REPO" --workdir "$MB_WORKDIR" --counts-dir "$MB_COUNTS_DIR"
           exit 0
         fi
         args=()

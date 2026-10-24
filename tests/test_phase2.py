@@ -201,17 +201,27 @@ class ExecutorDecisions(unittest.TestCase):
         api.add_pr(1, title="Add list", sha="1" * 40, verdict="merge", labels=["launcher"])
         api.add_pr(2, title="CI tweak", sha="2" * 40, verdict="merge", paths=[".github/workflows/ci.yml"])
         api.add_pr(3, title="Rules", sha="3" * 40, verdict="merge", paths=[".github/maintainer/MAINTAINER.md"])
+        api.add_pr(4, title="Stats", sha="4" * 40, verdict="merge", paths=["tools/readme_stats.py"])
         n = _issue(api)
         res = _executor(api).run(n, commands.parse("/approve"))
-        self.assertEqual([o["status"] for o in res["outcomes"]], ["skipped"] * 3)
+        self.assertEqual([(o["pr"], o["status"]) for o in res["outcomes"]], [(1, "skipped")])  # the rest: not queued
+        self.assertEqual(_executor(api).run(n, commands.parse("/approve #2 #3 #4"))["outcomes"], [])
+        self.assertFalse([c for c in api.calls if c[0] == "merge"])
+        # a queue built before the gate (no "outside" flag) is still gated when the bot acts
+        api.issues[n]["body"] = api.issues[n]["body"].replace(',"o":1', "")
+        res = _executor(api).run(n, commands.parse("/approve"))
+        out = {o["pr"]: o for o in res["outcomes"]}
+        for pr in (2, 3, 4):
+            self.assertEqual(out[pr]["status"], "skipped")
+            self.assertIn("outside the wave's paths", out[pr]["detail"])
         self.assertFalse([c for c in api.calls if c[0] == "merge"])
 
     def test_launcher_label_blocks_only_a_v1_review(self):
         api = FakeApi()
-        api.add_pr(1, title="launcher: dock_glass", sha="1" * 40, verdict="merge", labels=["launcher"], version=2,
-                   paths=["launcher/app/src/main/res/values/config.xml"])
+        api.add_pr(1, title="launcher: German strings", sha="1" * 40, verdict="merge", labels=["launcher"], version=2,
+                   paths=["launcher/app/src/main/res/values-de/strings.xml"])
         api.add_pr(2, title="launcher: old review", sha="2" * 40, verdict="merge", labels=["launcher"],
-                   paths=["launcher/app/src/main/res/values/config.xml"])
+                   paths=["launcher/app/src/main/res/values-de/strings.xml"])
         n = _issue(api)
         res = _executor(api).run(n, commands.parse("/approve"))
         out = {o["pr"]: o for o in res["outcomes"]}

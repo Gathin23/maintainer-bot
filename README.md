@@ -156,6 +156,11 @@ Full design: [docs/phase2.md](docs/phase2.md).
 - It checks again at the moment of acting: the head commit must be the reviewed one, checks must be green
   (a red one stops the batch), and PRs labelled `needs-maintainer`, `launcher` or `on-hold`, or touching
   `.github/` or the bot's rules, are never merged. It never pushes to the default branch.
+- Launch limits: a wave only acts on PRs inside a path gate (on CleanYourTV: lists, docs, themes, SHOWCASE.md,
+  README table rows and translations; everything else stays for the maintainer), on at most `max-wave` PRs
+  (default 25), and only while main's CI is green: it checks before the wave, every `main-check-every` merges
+  (default 5) and after the last one, and red stops it. The README counts run the repo's scripts, so on
+  CleanYourTV they run in a job with no secrets and the counts PR is opened by a job that runs no repo code.
 - Identity: a GitHub App (or a fine-grained token), because the workflow's own token cannot start CI on the
   bot's branches. `setup/create-app.html` creates the App in one click.
 
