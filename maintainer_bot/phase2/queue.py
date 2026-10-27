@@ -25,7 +25,7 @@ BOT_LABELS = set(sticky.LABEL_VERDICT)
 HOLD_LABEL = "on-hold"          # the maintainer's own hold: never queued
 REWORK_LABEL = "needs-rework"   # already asked: waiting for the author, not asked again
 
-FOOTER = "<sub>Built by maintainer-bot from its reviews · runs on [0G Private Computer](https://pc.0g.ai)</sub>"
+FOOTER = "<sub>Built by maintainer-bot from its reviews · runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-build)</sub>"
 
 
 def collect(api) -> tuple[dict[int, dict], dict]:

@@ -3,7 +3,7 @@
 A review bot for busy open-source repos. Every pull request gets one short comment that says what should
 happen to it (merge, merge with a small fix, a few changes first, close, a better home for the idea, or a
 maintainer decision), why, and which checks it ran, judged the way **your** maintainer judges: from your written
-rules and your own past decisions on similar PRs. It runs on [0G Private Computer](https://pc.0g.ai): one API key,
+rules and your own past decisions on similar PRs. It runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=maintainer-bot-readme): one API key,
 many models.
 
 Built for [CleanYourTV](https://github.com/Gathin23/cleanyourtv), which got 500+ pull requests in its first
@@ -74,7 +74,7 @@ Backtested on CleanYourTV's real history (train on older rounds, test on newer o
 
 ## Install on your repo
 
-1. Get a key at [pc.0g.ai](https://pc.0g.ai) and add it as a repository secret named `OG_PC_API_KEY`.
+1. Get a key at [pc.0g.ai](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=maintainer-bot-readme) and add it as a repository secret named `OG_PC_API_KEY`.
 2. Add your rules as `.github/maintainer/MAINTAINER.md` (what you merge, what you never take, how you
    word comments). Optional: `.github/maintainer/precedents.jsonl`, your past decisions
    (`scripts/export_precedents.py` builds it from a backtest dataset).

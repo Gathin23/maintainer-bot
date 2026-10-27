@@ -9,7 +9,7 @@ from ..live import _clean
 # a different marker from the phase-1 review ("<!-- maintainer-bot"), so the sticky lookup never finds these
 ACTION_MARK = "<!-- mb-action"
 FOOTER = ("<sub>maintainer-bot, with a maintainer's approval · runs on "
-          "[0G Private Computer](https://pc.0g.ai)</sub>")
+          "[0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-message)</sub>")
 OPENERS = ("Merged, thank you!", "Merged, thanks!", "Merged, thanks for adding this!")
 
 

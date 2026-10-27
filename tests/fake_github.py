@@ -27,7 +27,7 @@ def sticky_body(sha: str, verdict: str, *, reason="Thanks for the PR! Clean list
         if ask:
             lines += ["", f"**What would help:** {ask}"]
     lines += ["", "<details><summary>Checks</summary>", "", "- **OK**: fine", "", "</details>", "",
-              "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai)</sub>"]
+              "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-review)</sub>"]
     if data:
         lines.append(write_data(data))
     return "\n".join(lines)
