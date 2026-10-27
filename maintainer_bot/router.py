@@ -56,6 +56,34 @@ class ToolCallFailed(RuntimeError):
     pass
 
 
+_INFO: dict[str, dict] = {}
+
+
+def cache_prices(model: str) -> tuple[float, float]:
+    """(cache write, cache read) per token. The router lists cache_write; a read is priced at a tenth of the
+    prompt rate (Anthropic's ratio), since the router does not list it."""
+    p = price(model)
+    if model not in _INFO:
+        _INFO[model] = model_info(model)
+    info = _INFO[model].get("pricing_usd") or {}
+    return float(info.get("cache_write") or p.prompt * 1.25), p.prompt / 10
+
+
+def record_usage(ledger: Ledger, model: str, usage: dict, tag: str = "") -> float:
+    """Log one call's cost, prompt-cache tokens included.
+
+    The router caches long prompts by itself: a 70K-token prompt can come back as a few hundred input_tokens plus
+    cache_creation_input_tokens and cache_read_input_tokens. Counting input_tokens alone undercounts the cost."""
+    usd = ledger.record(model=model, input_tokens=int(usage.get("input_tokens", 0)),
+                        output_tokens=int(usage.get("output_tokens", 0)), price=price(model), tag=tag)
+    cw, cr = int(usage.get("cache_creation_input_tokens") or 0), int(usage.get("cache_read_input_tokens") or 0)
+    if cw or cr:
+        write, read = cache_prices(model)
+        usd += ledger.record(model=model, input_tokens=cw + cr, output_tokens=0,
+                             price=Price((cw * write + cr * read) / (cw + cr), 0), tag=tag + ":cache")
+    return usd
+
+
 def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger, max_tokens: int = 4000,
               tag: str = "", retries: int = 3, timeout: int = 240, deadline_s: int = 900) -> dict:
     """Send one message and force a single tool call; returns the tool input. Costs go to the ledger.
@@ -91,8 +119,7 @@ def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger,
         d = r.json()
         usage = d.get("usage") or {}
         if usage:
-            ledger.record(model=model, input_tokens=int(usage.get("input_tokens", 0)),
-                          output_tokens=int(usage.get("output_tokens", 0)), price=price(model), tag=tag)
+            record_usage(ledger, model, usage, tag)
         if r.status_code == 400 and "tool" in str(d).lower() and body["tool_choice"].get("type") != "auto":
             # some routed models (e.g. Claude on 0G PC) refuse a forced tool; ask for it instead
             body["tool_choice"] = {"type": "auto"}
