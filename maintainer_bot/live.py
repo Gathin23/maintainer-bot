@@ -31,7 +31,7 @@ from .router import ToolCallFailed
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- maintainer-bot"
 DATA_MARK = "<!-- mb-review "   # the model's judgement, kept for a re-review without a model call
-FOOTER = "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai)</sub>"
+FOOTER = "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-review)</sub>"
 
 # labels the bot may add or remove; it never touches any other label
 TYPE_LABELS = {"tv-list": "tv-list", "launcher": "launcher", "tools": "scripts", "docs": "docs", "showcase": "docs",

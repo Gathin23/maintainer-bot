@@ -109,7 +109,7 @@ class LiveTest(unittest.TestCase):
         self.assertIn("remote-pairing", body)
         self.assertIn("@​someone", body)  # no pings
         self.assertIn("a maintainer makes the final call", body)
-        self.assertIn("runs on [0G Private Computer](https://pc.0g.ai)", body)
+        self.assertIn("runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-review)", body)
         for word in ("Opus", "GLM", "TEE", "sealed", "private inference"):
             self.assertNotIn(word, body)
 
