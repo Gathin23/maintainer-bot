@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import checklists, dataset, facts as facts_mod, retrieval
 from .ledger import BudgetExceeded, Ledger
-from .router import ToolCallFailed, call_tool
+from .router import ToolCallFailed, call_tool, call_tool_any, is_openai_model
 
 VERDICTS = ("merge", "merge-with-fix", "rework", "close", "showcase", "addon", "theme", "hold")
 ACCEPT = ("merge", "merge-with-fix")
@@ -159,12 +159,25 @@ def _diff(files: list[dict], limit: int = 6000) -> str:
 
 # ---------- running ----------
 
+SECOND_THINKING = "medium"   # 0GM as the second opinion: reasoning_effort medium (report/0gm-research.md, 5)
+
+
 def judge(r: dict, snap: dict, index, *, rules_md: str, model: str, critic_model: str | None,
-          second_model: str | None, ledger: Ledger, system_extra: str = "", k: int = 5) -> dict:
-    """One review: decision, then (when it matters) the critic and the cheap second opinion."""
-    ex = index.similar(r, k=k)
-    user = prompt(r, snap, rules_md, retrieval.render(ex))
-    out = {"pr": r["pr"], "type": r["type"], "examples": [e["pr"] for e in ex]}
+          second_model: str | None, ledger: Ledger, system_extra: str = "", k: int = 5, blocks: str = "",
+          related: str = "") -> dict:
+    """One review: decision, then (when it matters) the critic and the cheap second opinion.
+
+    blocks: the extra context (context.py: "DPX"; "" = today's prompt). The critic and the second opinion read
+    the same prompt as the decision."""
+    if blocks:
+        from . import context
+        user, used, info = context.build(r, snap, rules_md, index, blocks, related)
+        system_extra = system_extra + context.LONG_NOTE
+        out = {"pr": r["pr"], "type": r["type"], "examples": used, "context": info}
+    else:
+        ex = index.similar(r, k=k)
+        user = prompt(r, snap, rules_md, retrieval.render(ex))
+        out = {"pr": r["pr"], "type": r["type"], "examples": [e["pr"] for e in ex]}
     if always_maintainer(r["facts"]):  # the policy holds it whatever a model says: no calls
         out.update(verdict="hold", confidence=0.0, reasons=[], fix="", comment="", specific="", precedent="",
                    priority="", skipped_model="always the maintainer")
@@ -184,8 +197,9 @@ def judge(r: dict, snap: dict, index, *, rules_md: str, model: str, critic_model
                          "suggested": c.get("suggested_verdict", "")}
     if second_model and out["verdict"] != "hold" and not blocked:
         try:
-            s = call_tool(model=second_model, system=SYSTEM, user=user, tool=TOOL, ledger=ledger, max_tokens=9000,
-                          tag=f"v4-second:{r['pr']}", retries=3, timeout=300)
+            s = call_tool_any(model=second_model, system=SYSTEM, user=user, tool=TOOL, ledger=ledger,
+                              max_tokens=9000, tag=f"v4-second:{r['pr']}", retries=3, timeout=300,
+                              thinking=SECOND_THINKING if is_openai_model(second_model) else None)
             out["second"] = {"verdict": s.get("verdict"), "confidence": float(s.get("confidence") or 0)}
         except ToolCallFailed as e:
             out["second"] = {"error": str(e)[:120]}

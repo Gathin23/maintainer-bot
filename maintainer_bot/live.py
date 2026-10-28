@@ -24,13 +24,14 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import checklists, facts as facts_mod, retrieval, templates, v4
+from . import checklists, context as context_mod, facts as facts_mod, retrieval, templates, v4
 from .ledger import BudgetExceeded, Ledger
 from .router import ToolCallFailed
 
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- maintainer-bot"
 DATA_MARK = "<!-- mb-review "   # the model's judgement, kept for a re-review without a model call
+COLLIDE_MARK = "<!-- mb-collide "   # the duplicate pass's findings (information only, never read by the policy)
 FOOTER = "<sub>Reviewed by maintainer-bot · runs on [0G Private Computer](https://pc.0g.ai/?utm_source=cleanyourtv&utm_medium=github&utm_campaign=pr-bot-review)</sub>"
 
 # labels the bot may add or remove; it never touches any other label
@@ -108,6 +109,26 @@ class GitHub:
                 break
             page += 1
         return out[:limit]
+
+    def graphql(self, query: str, variables: dict | None = None) -> dict:
+        """A read-only GraphQL query (it runs in a dry run too)."""
+        for attempt in range(4):
+            try:
+                r = self.s.post(f"{API}/graphql", json={"query": query, "variables": variables or {}}, timeout=90)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 3:
+                    raise
+                time.sleep(10 * (attempt + 1))
+                continue
+            if r.status_code in (502, 503, 504) or (r.status_code == 403 and "rate limit" in r.text.lower()):
+                time.sleep(10 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            d = r.json()
+            if d.get("errors") and not d.get("data"):
+                raise RuntimeError(f"GraphQL: {str(d['errors'])[:200]}")
+            return d
+        r.raise_for_status()
 
     def write(self, method: str, path: str, body: dict | None = None):
         if self.dry_run:
@@ -232,6 +253,52 @@ def duplicate_context(gh: GitHub, snap: dict, max_fetch: int = 8) -> dict:
                                      main_texts=texts)
 
 
+def related_work(gh: GitHub, snap: dict, fx: dict, max_prs: int = 6, max_commits: int = 6) -> str:
+    """The X context block, from the API: the diffs of other open PRs on the same files (those the duplicate pass
+    paired with this one, likely duplicates, PRs adding the same folder), and main's commits on the same files in
+    the last 7 days. Bounded: at most max_prs + max_commits + 5 reads."""
+    me = snap["pr"]
+    nums: list[int] = []
+    for n in ([c.get("pr") for c in fx.get("collisions") or []]
+              + [d["pr"] for d in fx.get("possible_duplicates") or [] if not d.get("merged")]
+              + [p for ps in (fx.get("competing_open_prs") or {}).values() for p in ps]):
+        if isinstance(n, int) and n != me and n not in nums:
+            nums.append(n)
+    out = []
+    try:
+        for n in nums[:max_prs]:
+            p = gh.get(f"/pulls/{n}") or {}
+            if p.get("state") != "open":
+                continue
+            files = [{"path": f["filename"], "status": f.get("status", "modified"),
+                      "additions": f.get("additions", 0), "deletions": f.get("deletions", 0),
+                      "patch": f.get("patch") or ""} for f in gh.paged(f"/pulls/{n}/files", limit=100)]
+            mine = {f["path"] for f in snap["files"]}
+            shared = sorted(mine & {f["path"] for f in files})
+            out.append(f"### Open PR #{n}: {p.get('title', '')[:100]}"
+                       + (f" (shares {', '.join(shared[:3])})" if shared else "") + "\n"
+                       + context_mod.full_diff(files, 5000))
+        since = datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        paths = [f["path"] for f in snap["files"] if facts_mod._meaningful(f["path"])
+                 and f["path"] not in v4.TABLE_FILES][:5]
+        shas: list[str] = []
+        for path in paths:
+            q = requests.utils.quote(path, safe="")
+            for c in gh.get(f"/commits?sha={snap['default_branch']}&path={q}&since={since}&per_page=10") or []:
+                if c["sha"] not in shas:
+                    shas.append(c["sha"])
+        for sha in shas[:max_commits]:
+            c = gh.get(f"/commits/{sha}") or {}
+            parts = [f"--- {f['filename']}\n{f.get('patch') or ''}" for f in c.get("files") or []
+                     if f["filename"] in paths]
+            msg = ((c.get("commit") or {}).get("message") or "").splitlines()[:1]
+            out.append(f"### Merged on main this week: {sha[:8]} {msg[0] if msg else ''}\n"
+                       + context_mod.cut("\n".join(parts), 4000))
+    except requests.RequestException:
+        pass
+    return "\n\n".join(out)
+
+
 def ci_facts(gh: GitHub, sha: str, *, ignore: tuple[str, ...] = ("review",), apk_artifact: str = "") -> dict:
     """Finished checks that failed on the head commit and, optionally, the launcher APK size that CI saved as a
     small artifact (a text file with the byte count). Pending checks say nothing yet."""
@@ -296,7 +363,11 @@ def find_sticky(gh: GitHub, n: int) -> tuple[int | None, str, dict]:
     for c in gh.paged(f"/issues/{n}/comments", limit=300):
         if MARKER in (c.get("body") or ""):
             m = re.search(r"sha=([0-9a-f]{7,40})", c["body"])
-            return c["id"], (m.group(1) if m else ""), read_data(c["body"])
+            d = read_data(c["body"])
+            col = read_collisions(c["body"])
+            if col:
+                d["_collide"] = col
+            return c["id"], (m.group(1) if m else ""), d
     return None, "", {}
 
 
@@ -314,6 +385,68 @@ def read_data(body: str) -> dict:
 def write_data(d: dict) -> str:
     """The stored judgement as one hidden line; "--" can't appear inside an HTML comment."""
     return DATA_MARK + json.dumps(d, separators=(",", ":"), ensure_ascii=True).replace("--", "\\u002d\\u002d") + " -->"
+
+
+def read_collisions(body: str) -> list[dict]:
+    i = (body or "").find(COLLIDE_MARK)
+    if i < 0:
+        return []
+    j = body.find(" -->", i)
+    try:
+        d = json.loads(body[i + len(COLLIDE_MARK):j])
+    except ValueError:
+        return []
+    return [x for x in d if isinstance(x, dict)] if isinstance(d, list) else []
+
+
+def write_collisions(items: list[dict]) -> str:
+    return COLLIDE_MARK + json.dumps(items, separators=(",", ":"), ensure_ascii=True).replace("--", "\\u002d\\u002d") \
+        + " -->"
+
+
+def collision_lines(items: list[dict]) -> list[str]:
+    out = []
+    shown = [x for x in items if x.get("kind") not in ("none", "error", None)]
+    for c in [x for x in shown if not x.get("hub")][:5]:
+        why = _clean(c.get("why", ""), 160)
+        if c.get("folder"):
+            out.append(f"**Note**: possibly the same device as `{c['folder']}/` on main ({why})")
+        else:
+            kind = {"stacked": "stacked with", "duplicate": "possibly duplicates"}.get(c.get("kind"), "possibly collides with")
+            first = f"; #{c['first']} first" if c.get("first") and c.get("kind") != "stacked" else ""
+            out.append(f"**Note**: {kind} #{c['pr']} ({why}{first})")
+    hub = [x for x in shown if x.get("hub")]
+    if hub:   # one line for the textual conflicts in hub files, however many
+        files = sorted({f for x in hub for f in re.findall(r"`([^`]+)`", x.get("why", ""))})
+        nums = ", ".join(f"#{x['pr']}" for x in sorted(hub, key=lambda x: x["pr"])[:8]) + ("…" if len(hub) > 8 else "")
+        out.append(f"**Note**: possibly collides with {nums} (the same lines of "
+                   + (", ".join(f"`{f}`" for f in files[:3]) or "a shared file")
+                   + "; whichever merges second needs a rebase)")
+    return out
+
+
+CHECKS_OPEN = "<details><summary>Checks</summary>"
+
+
+def set_collisions(body: str, items: list[dict]) -> str:
+    """The sticky with its collision lines (in Checks) and their hidden record replaced by `items`. Everything
+    else, the verdict and the stored judgement included, is left exactly as it was."""
+    lines = [l for l in (body or "").split("\n")
+             if not l.startswith(COLLIDE_MARK) and not re.match(
+                 r"^- \*\*Note\*\*: (possibly (collides with|duplicates|the same device as)|stacked with) ", l)]
+    new = [f"- {c}" for c in collision_lines(items)]
+    if items:
+        lines.append(write_collisions(items))
+    if new:
+        if CHECKS_OPEN in lines:
+            i = lines.index(CHECKS_OPEN) + 1
+            if i < len(lines) and lines[i] == "":
+                i += 1
+            lines[i:i] = new
+        else:
+            at = next((k for k, l in enumerate(lines) if l.startswith("<sub>")), len(lines))
+            lines[at:at] = [CHECKS_OPEN, ""] + new + ["", "</details>", ""]
+    return "\n".join(lines)
 
 
 def diff_hash(snap: dict) -> str:
@@ -413,6 +546,7 @@ def checks(fx: dict, ptype: str) -> list[str]:
                        "`); the tables are regenerated on merge, no rebase needed")
         else:
             out.append(f"**{note}**: conflicts with main" + (": `" + "`, `".join(files[:5]) + "`" if files else ""))
+    out += collision_lines(fx.get("collisions") or [])
     for d in (fx.get("possible_duplicates") or [])[:3]:
         out.append(f"**{note}**: {'likely duplicate of' if d.get('strong') else 'may overlap'} #{d['pr']} ({_clean(d['why'], 140)})")
     if (fx.get("already_on_main_live") or {}).get("share", 0) >= 0.9:
@@ -482,6 +616,8 @@ def render(snap: dict, *, verdict: str, model_verdict: str, priority: str, reaso
               "to run it again.", "", FOOTER]
     if data:
         lines.append(write_data(data))
+    if fx.get("collisions"):
+        lines.append(write_collisions(fx["collisions"]))
     return "\n".join(lines)
 
 
@@ -500,7 +636,8 @@ def render_unreviewed(snap: dict, fx: dict, ptype: str) -> str:
                       "**maintainer-bot review** · this one needs **a maintainer decision**", "",
                       "Thanks for the PR! Couldn't review this one automatically; it goes to the maintainer.", "",
                       "<details><summary>Checks</summary>", ""] + [f"- {c}" for c in checks(fx, ptype)] +
-                     ["", "</details>", "", FOOTER])
+                     ["", "</details>", "", FOOTER] +
+                     ([write_collisions(fx["collisions"])] if fx.get("collisions") else []))
 
 
 def labels_for(ptype: str, verdict: str, priority: str, fx: dict, snap: dict,
@@ -550,7 +687,7 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
            second: str = "glm-5.3-flash", policy: dict | None = None,
            rules_path: str = ".github/maintainer/MAINTAINER.md",
            precedents_path: str = ".github/maintainer/precedents.jsonl", apk_artifact: str = "", refresh: bool = False,
-           log=print) -> dict:
+           context_blocks: str = "", log=print) -> dict:
     """One review. refresh=True (after CI finished): re-run only the facts and the policy on the stored judgement,
     even at a commit that was already reviewed; it never calls a model."""
     gh = GitHub(repo, dry_run=dry_run)
@@ -594,6 +731,8 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
     if fx.get("conflicts_with_main"):
         fx["conflict_files"] = conflict_files(gh, snap)
     fx.update(duplicate_context(gh, snap))
+    if before.get("_collide"):   # from the duplicate pass: shown in Checks, never read by the policy or the model
+        fx["collisions"] = before["_collide"]
     dh = diff_hash(snap)
 
     # re-review without a model call: same changes as last time, or only Markdown on a code/list PR
@@ -631,9 +770,11 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
             return {**result, "skipped": f"daily cap reached (${day_ledger.spent:.2f} of ${daily_cap:.2f})"}
         start = day_ledger.spent
         L = Ledger(path, min(daily_cap, start + per_pr_cap))
+        blocks = context_mod.parse(context_blocks)
         try:
+            related = related_work(gh, snap, fx) if "X" in blocks else ""
             res = v4.judge(row, snap, index, rules_md=rules_md, model=model, critic_model=critic,
-                           second_model=second, ledger=L, system_extra=LIVE_SYSTEM)
+                           second_model=second, ledger=L, system_extra=LIVE_SYSTEM, blocks=blocks, related=related)
         except BudgetExceeded as e:
             return {**result, "skipped": str(e)}
         except ToolCallFailed as e:
@@ -683,7 +824,8 @@ def review(repo: str, n: int, *, rules_md: str | None = None, precedents: str | 
     return {**result, "type": ptype, "verdict": verdict, "model_verdict": res["verdict"], "why_held": why,
             "reasons": res.get("reasons") or [], "fix": fix, "re_review": bool(note),
             "confidence": res.get("confidence"), "priority": priority, "labels": labels, "labels_added": add,
-            "labels_removed": rem, "cost_usd": round(cost, 4), "comment": body}
+            "labels_removed": rem, "cost_usd": round(cost, 4), "context": res.get("context"),
+            "second": res.get("second"), "critic": res.get("critic"), "comment": body}
 
 
 def _post(gh: GitHub, n: int, sticky_id: int | None, body: str) -> None:

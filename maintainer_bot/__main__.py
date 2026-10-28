@@ -8,6 +8,11 @@
     python -m maintainer_bot review    --repo OWNER/NAME --pr 123 [--dry-run] [--force]
     python -m maintainer_bot backfill  --repo OWNER/NAME [--dry-run]
     python -m maintainer_bot refresh   --repo OWNER/NAME --event $GITHUB_EVENT_PATH   (after CI: facts only, no model)
+    python -m maintainer_bot dedupe    --repo OWNER/NAME [--pr 123] [--dry-run] [--out FILE]
+                                       (duplicates and collisions across open PRs, 0GM pairwise; adds lines to Checks)
+
+review/backfill/refresh options: --context-blocks DPX (more context for the decision; default off),
+--second-model 0gm-1.0-35b-a3b (the second opinion; default glm-5.3-flash), --results FILE (append each result).
 
 Phase 2 (acts only on a maintainer's /approve; see docs/phase2.md):
     python -m maintainer_bot queue-issue     --repo OWNER/NAME [--allow USERS] [--dry-run]
@@ -35,6 +40,23 @@ def _results(path: str) -> dict[int, dict]:
                 e = json.loads(line)
                 if "verdict" in e:
                     out[e["pr"]] = e
+    return out
+
+
+def _append(path: str, r: dict) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({k: v for k, v in r.items() if k != "comment"}, default=str) + "\n")
+
+
+def _results_log(path: str, log):
+    """backfill prints one JSON line per PR through `log`: also keep it in the results file."""
+    def out(line: str) -> None:
+        log(line)
+        try:
+            _append(path, json.loads(line))
+        except (ValueError, TypeError):
+            pass
     return out
 
 
@@ -81,6 +103,20 @@ def main(argv: list[str] | None = None) -> None:
         r.add_argument("--apk-artifact", default=os.environ.get("MB_APK_ARTIFACT", ""),
                        help="name of a CI artifact holding the launcher APK size (optional APK-size fact)")
         r.add_argument("--json", action="store_true", help="print the result as JSON")
+        r.add_argument("--context-blocks", default=os.environ.get("MB_CONTEXT_BLOCKS", ""),
+                       help="extra context for the decision: D (full diff), P (30 precedents), X (related work)")
+        r.add_argument("--results", default=os.environ.get("MB_RESULTS", ""),
+                       help="append each review result (no comment text) to this JSONL file, e.g. for a shadow run")
+    dd = sub.add_parser("dedupe")
+    dd.add_argument("--repo", required=True)
+    dd.add_argument("--pr", type=int, default=0, help="only the pairs that include this PR (0: every open PR)")
+    dd.add_argument("--dry-run", action="store_true", help="print the lines, write nothing")
+    dd.add_argument("--model", default=os.environ.get("MB_DEDUPE_MODEL") or "0gm-1.0-35b-a3b")
+    dd.add_argument("--ledger", default=os.environ.get("MB_LEDGER", ".maintainer-bot/ledger.jsonl"))
+    dd.add_argument("--daily-cap", type=float, default=float(os.environ.get("MB_DAILY_CAP", "5")))
+    dd.add_argument("--cap", type=float, default=float(os.environ.get("MB_DEDUPE_CAP") or 1.0),
+                    help="most one pass may spend")
+    dd.add_argument("--out", default="", help="write the full result (pairs, signals, answers) as JSON")
     qi = sub.add_parser("queue-issue")
     qi.add_argument("--repo", required=True)
     qi.add_argument("--allow", default=os.environ.get("MB_ALLOW_USERS", ""))
@@ -138,14 +174,40 @@ def main(argv: list[str] | None = None) -> None:
                                      out=args.out, max_wave=args.max_wave))
         return
 
+    if args.cmd == "dedupe":
+        from datetime import datetime, timezone
+        from . import dedupe
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = args.ledger.replace(".jsonl", f"-{day}.jsonl")
+        spent = ledger.Ledger(path, args.daily_cap).spent
+        if spent >= args.daily_cap:
+            print(json.dumps({"skipped": f"daily cap reached (${spent:.2f} of ${args.daily_cap:.2f})"}))
+            return
+        L = ledger.Ledger(path, min(args.daily_cap, spent + args.cap))
+        gh = live.GitHub(args.repo, dry_run=args.dry_run)
+        res = dedupe.run(gh, only=args.pr or None, model=args.model, ledger=L)
+        written = dedupe.apply(gh, res)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump({**res, "written": written}, f, indent=1, default=str)
+        for w in written:
+            if w.get("lines") or w["action"] != "unchanged":
+                print(json.dumps({k: w[k] for k in ("pr", "action") if k in w} | {"lines": w.get("lines", [])}))
+        print(json.dumps(res["stats"]))
+        return
+
     if args.cmd in ("review", "backfill", "refresh"):
         kw = dict(rules_md=open(args.rules, encoding="utf-8").read() if args.rules else None,
                   precedents=open(args.precedents, encoding="utf-8").read() if args.precedents else None,
                   dry_run=args.dry_run, force=args.force, ledger_path=args.ledger, daily_cap=args.daily_cap,
                   per_pr_cap=args.per_pr_cap, model=args.model, critic=args.critic_model, second=args.second_model,
-                  apk_artifact=args.apk_artifact)
+                  apk_artifact=args.apk_artifact, context_blocks=args.context_blocks)
+        if args.results:
+            kw["log"] = _results_log(args.results, kw.get("log", print))
         if args.cmd == "review":
             r = live.review(args.repo, args.pr, **kw)
+            if args.results:
+                _append(args.results, r)
             if args.json:
                 print(json.dumps(r, indent=1))
             else:
@@ -155,6 +217,8 @@ def main(argv: list[str] | None = None) -> None:
         elif args.cmd == "refresh":
             for r in live.refresh_after_ci(args.repo, args.event, **kw):
                 print(json.dumps({k: v for k, v in r.items() if k != "comment"}))
+                if args.results:
+                    _append(args.results, r)
         else:
             live.backfill(args.repo, **kw)
         return

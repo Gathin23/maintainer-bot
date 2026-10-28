@@ -3,9 +3,10 @@ description: Reviews pull requests the way your maintainer does; on a maintainer
 branding: { icon: check-circle, color: green }
 inputs:
   mode:
-    description: "review (phase 1, default) | refresh (after CI: facts and policy only, no model) | queue (open
-      today's queue issue) | command (act on a /approve comment) | counts-pr (open and merge the README counts PR
-      from a patch another job made)"
+    description: "review (phase 1, default) | refresh (after CI: facts and policy only, no model) | dedupe
+      (duplicates and collisions across the open PRs on 0GM: adds 'Possibly collides with #N' lines to Checks;
+      with pr, only that PR's pairs) | queue (open today's queue issue) | command (act on a /approve comment) |
+      counts-pr (open and merge the README counts PR from a patch another job made)"
     required: false
     default: review
   github-token:
@@ -76,6 +77,30 @@ inputs:
     description: 0G router model for the cheap second opinion
     required: false
     default: glm-5.3-flash
+  second-opinion-model:
+    description: "the second opinion's model; empty = second-model. 0gm-1.0-35b-a3b runs on the OpenAI endpoint
+      with reasoning_effort medium"
+    required: false
+    default: ""
+  context-blocks:
+    description: "extra context for the decision model: D (full diff to 400K chars, description to 4,000), P (30
+      past decisions), X (related open PRs and main's merges on the same files); prompt capped at about 150K
+      tokens. Empty = off (today's prompt). Suggested with DPX: per-pr-cap-usd 1.5"
+    required: false
+    default: ""
+  dedupe-model:
+    description: "dedupe: the model that judges each candidate pair"
+    required: false
+    default: 0gm-1.0-35b-a3b
+  dedupe-cap-usd:
+    description: "dedupe: most one pass may spend (it also counts toward daily-cap-usd)"
+    required: false
+    default: "1"
+  results-file:
+    description: "review/backfill: append each result (verdict, judgement, cost; no comment text) to this JSONL
+      file, e.g. for a shadow run with dry-run: true"
+    required: false
+    default: ""
   critic-model:
     description: 0G router model for the critic that reads every code merge
     required: false
@@ -113,7 +138,11 @@ runs:
         MB_DAILY_CAP: ${{ inputs.daily-cap-usd }}
         MB_PER_PR_CAP: ${{ inputs.per-pr-cap-usd }}
         MB_MODEL: ${{ inputs.model }}
-        MB_SECOND_MODEL: ${{ inputs.second-model }}
+        MB_SECOND_MODEL: ${{ inputs.second-opinion-model || inputs.second-model }}
+        MB_CONTEXT_BLOCKS: ${{ inputs.context-blocks }}
+        MB_DEDUPE_MODEL: ${{ inputs.dedupe-model }}
+        MB_DEDUPE_CAP: ${{ inputs.dedupe-cap-usd }}
+        MB_RESULTS: ${{ inputs.results-file }}
         MB_CRITIC_MODEL: ${{ inputs.critic-model }}
         MB_APK_ARTIFACT: ${{ inputs.apk-size-artifact }}
         MB_PR: ${{ inputs.pr }}
@@ -139,6 +168,13 @@ runs:
         fi
         if [ "$MB_MODE" = "refresh" ]; then
           python -m maintainer_bot refresh --repo "$MB_REPO" --event "$GITHUB_EVENT_PATH"
+          exit 0
+        fi
+        if [ "$MB_MODE" = "dedupe" ]; then
+          dargs=()
+          [ "$MB_DRY_RUN" = "true" ] && dargs+=(--dry-run)
+          [ -n "$MB_PR" ] && dargs+=(--pr "$MB_PR")
+          python -m maintainer_bot dedupe --repo "$MB_REPO" "${dargs[@]}"
           exit 0
         fi
         if [ "$MB_MODE" = "command" ]; then
