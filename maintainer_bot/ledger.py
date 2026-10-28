@@ -69,7 +69,7 @@ class Ledger:
                         continue
                     e = json.loads(line)
                     m = per.setdefault(e["model"], {"calls": 0, "in": 0, "out": 0, "usd": 0.0})
-                    m["calls"] += 1
+                    m["calls"] += 0 if str(e.get("tag", "")).endswith(":cache") else 1  # a call's cache line
                     m["in"] += e["in"]
                     m["out"] += e["out"]
                     m["usd"] += e["usd"]

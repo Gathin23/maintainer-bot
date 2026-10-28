@@ -1,4 +1,8 @@
-"""A small client for the 0G Private Computer router (Anthropic Messages API, tool calls).
+"""A small client for the 0G Private Computer router (tool calls).
+
+Claude, GLM and most routed models go through the Anthropic Messages endpoint (/v1/messages). 0GM goes through the
+OpenAI endpoint (/v1/chat/completions): on the Anthropic endpoint its default thinking ran past max_tokens and
+garbled the tool arguments (report/0gm-research.md, section 1). call_tool_any picks the right one.
 
 The key is read from the environment (OG_PC_API_KEY) or an env file outside the repo; it is never logged.
 """
@@ -141,3 +145,90 @@ def call_tool(*, model: str, system: str, user: str, tool: dict, ledger: Ledger,
             if answered_without_tool > 1:
                 raise ToolCallFailed(last)
     raise ToolCallFailed(last or "unknown error")
+
+
+# ---------- the OpenAI endpoint (0GM) ----------
+
+OPENAI_PREFIXES = ("0gm",)
+
+
+def is_openai_model(model: str) -> bool:
+    return (model or "").startswith(OPENAI_PREFIXES)
+
+
+def record_openai_usage(ledger: Ledger, model: str, usage: dict, tag: str = "") -> float:
+    """Log one OpenAI-format call. prompt_tokens already includes the cached tokens
+    (prompt_tokens_details.cached_tokens) and completion_tokens includes the reasoning tokens, so pricing both at
+    the listed rates leaves nothing out (cached tokens are counted at the full prompt rate: a slight overcount,
+    the safe side for a cap)."""
+    return ledger.record(model=model, input_tokens=int(usage.get("prompt_tokens") or 0),
+                         output_tokens=int(usage.get("completion_tokens") or 0), price=price(model), tag=tag)
+
+
+def call_tool_openai(*, model: str, system: str, user: str, tool: dict, ledger: Ledger, max_tokens: int = 4000,
+                     thinking: str | None = None, tag: str = "", retries: int = 3, timeout: int = 240,
+                     deadline_s: int = 900) -> dict:
+    """One forced tool call on /v1/chat/completions; returns the tool input. Costs go to the ledger.
+
+    thinking: None = off (0GM's chat-template flag enable_thinking=false), or a reasoning_effort
+    ("low" | "medium" | "high")."""
+    body = {"model": model, "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "tools": [{"type": "function", "function": {"name": tool["name"], "description": tool["description"],
+                                                         "parameters": tool["input_schema"]}}],
+            "tool_choice": {"type": "function", "function": {"name": tool["name"]}}}
+    if is_openai_model(model):
+        if thinking:
+            body["reasoning_effort"] = thinking
+        else:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+    headers = {"Authorization": f"Bearer {api_key()}", "content-type": "application/json"}
+    last, started, bad_answers = None, time.monotonic(), 0
+    for attempt in range(retries):
+        if time.monotonic() - started > deadline_s:
+            raise ToolCallFailed(f"gave up after {deadline_s}s ({last or 'no answer'})")
+        ledger.check()
+        try:
+            r = requests.post(f"{ROUTER}/v1/chat/completions", headers=headers, data=json.dumps(body),
+                              timeout=timeout)
+        except requests.RequestException as e:
+            last = str(e)[:160]
+            time.sleep(5 * (attempt + 1))
+            continue
+        if r.status_code >= 500 or r.status_code == 429:
+            last = f"HTTP {r.status_code}"
+            time.sleep(20 + 15 * attempt)
+            continue
+        d = r.json()
+        if d.get("usage"):
+            record_openai_usage(ledger, model, d["usage"], tag)
+        if r.status_code != 200:
+            raise ToolCallFailed(f"HTTP {r.status_code}: {str(d.get('error') or d)[:300]}")
+        ch = (d.get("choices") or [{}])[0]
+        for call in (ch.get("message") or {}).get("tool_calls") or []:
+            fn = call.get("function") or {}
+            if fn.get("name") == tool["name"]:
+                try:
+                    out = json.loads(fn.get("arguments") or "{}")
+                    if isinstance(out, dict):
+                        return out
+                except json.JSONDecodeError:
+                    pass
+                last = "tool arguments were not a JSON object"
+                break
+        else:
+            last = f"no tool call (finish_reason={ch.get('finish_reason')})"
+        if ch.get("finish_reason") == "length":
+            body["max_tokens"] = min(int(body["max_tokens"] * 2), 32000)
+        else:
+            bad_answers += 1
+            if bad_answers > 1:
+                raise ToolCallFailed(last)
+    raise ToolCallFailed(last or "unknown error")
+
+
+def call_tool_any(*, model: str, thinking: str | None = None, **kw) -> dict:
+    """call_tool on the endpoint that suits the model: OpenAI for 0GM, Anthropic for the rest."""
+    if is_openai_model(model):
+        return call_tool_openai(model=model, thinking=thinking, **kw)
+    return call_tool(model=model, **kw)
